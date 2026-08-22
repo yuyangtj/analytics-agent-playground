@@ -4,3 +4,4 @@ __pycache__/
 data/business.duckdb
 data/issue_log.json
 .claude/
+benchmark/results/
