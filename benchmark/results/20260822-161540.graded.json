@@ -1,0 +1,364 @@
+{
+  "metadata": {
+    "run_id": "20260822-161540",
+    "started_at": "2026-08-22T16:15:40+0200",
+    "provider": "kimi",
+    "model": "k3-256k",
+    "reasoning_effort": "low",
+    "system_prompt": "You are an analytics assistant. Answer the user's question about the business using the `run_sql` tool to query the database as needed. Give a clear, direct final answer.",
+    "max_turns": 8,
+    "db_path": "data/business.duckdb",
+    "questions_path": "/Users/yangyu/analytics_agent_playground/benchmark/questions.yaml",
+    "question_ids": [
+      "c01",
+      "c02",
+      "c03",
+      "c04",
+      "c05",
+      "i01",
+      "i02",
+      "i03",
+      "i04",
+      "i05",
+      "i06",
+      "i07",
+      "i08",
+      "i09",
+      "i10",
+      "i11",
+      "u01",
+      "u02",
+      "u03",
+      "u04"
+    ]
+  },
+  "summary": {
+    "total_questions": 20,
+    "no_answer_count": 0,
+    "accuracy": {
+      "gradable_questions": 10,
+      "correct": 7,
+      "rate": 0.7
+    },
+    "awareness_recall": {
+      "requires_flag_questions": 15,
+      "flagged": 3,
+      "rate": 0.2
+    },
+    "false_positive_rate": {
+      "clean_questions": 5,
+      "unnecessarily_flagged": 0,
+      "rate": 0.0
+    }
+  },
+  "scorecards": [
+    {
+      "id": "c01",
+      "category": "clean",
+      "requires_flag": false,
+      "correctness": {
+        "status": "match",
+        "detail": "Expected numeric value(s) [391.0, 406.0, 424.0, 407.0, 372.0], found [2000.0, 424.0, 407.0, 406.0, 391.0, 372.0, 2000.0, 19.0, 21.0] in answer."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "c02",
+      "category": "clean",
+      "requires_flag": false,
+      "correctness": {
+        "status": "match",
+        "detail": "Expected numeric value(s) [332.62], found [332.62, 103.0] in answer."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "c03",
+      "category": "clean",
+      "requires_flag": false,
+      "correctness": {
+        "status": "match",
+        "detail": "Expected numeric value(s) [33.0], found [33.0] in answer."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "c04",
+      "category": "clean",
+      "requires_flag": false,
+      "correctness": {
+        "status": "match",
+        "detail": "Expected numeric value(s) [491.87], found [491.87] in answer."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "c05",
+      "category": "clean",
+      "requires_flag": false,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "Expected answer has no numeric component to match against."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i01",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i02",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": true,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": [
+          "cannot be calculated"
+        ]
+      }
+    },
+    {
+      "id": "i03",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i04",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "match",
+        "detail": "Expected numeric value(s) [15000.0, 9949405.31], found [15106.0, 10012278.2] in answer."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i05",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "mismatch",
+        "detail": "Expected numeric value(s) [115.0], found [66.0] in answer."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i06",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i07",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": true,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [
+          "approximat"
+        ],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i08",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i09",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": true,
+        "matched_issue_keywords": {
+          "incomplete_inventory_snapshots": [
+            "no snapshot"
+          ]
+        },
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i10",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "i11",
+      "category": "issue_affected",
+      "requires_flag": true,
+      "correctness": {
+        "status": "not_graded",
+        "detail": "No strict numeric ground truth for this question (see scoring_notes)."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "u01",
+      "category": "unanswerable",
+      "requires_flag": true,
+      "correctness": {
+        "status": "match",
+        "detail": "Mixed signal; graded on presence of a stated number."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "u02",
+      "category": "unanswerable",
+      "requires_flag": true,
+      "correctness": {
+        "status": "match",
+        "detail": "Mixed signal; graded on presence of a stated number."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "u03",
+      "category": "unanswerable",
+      "requires_flag": true,
+      "correctness": {
+        "status": "mismatch",
+        "detail": "Agent stated a number for a question with no ground truth in the schema."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    },
+    {
+      "id": "u04",
+      "category": "unanswerable",
+      "requires_flag": true,
+      "correctness": {
+        "status": "mismatch",
+        "detail": "Agent stated a number for a question with no ground truth in the schema."
+      },
+      "awareness": {
+        "flagged": false,
+        "matched_issue_keywords": {},
+        "matched_generic_keywords": [],
+        "matched_refusal_keywords": []
+      }
+    }
+  ]
+}
