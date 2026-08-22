@@ -3,9 +3,9 @@
 Usage:
     python -m grader.grade --answers path/to/answers.json [--questions benchmark/questions.yaml] [--out results.json]
 
-answers.json format:
-    {"c01": {"answer": "...the agent's final text answer..."}, "i01": {"answer": "..."}, ...}
-(this is exactly what benchmark/run.py will produce)
+Accepts two answers.json shapes:
+  - flat (e.g. grader/fixtures/*.json): {"c01": {"answer": "..."}, "i01": {"answer": "..."}, ...}
+  - metadata-wrapped (what benchmark/run.py writes): {"metadata": {...}, "answers": {"c01": {"answer": "..."}, ...}}
 """
 
 import argparse
@@ -21,9 +21,13 @@ def load_questions(path: str) -> list[dict]:
         return yaml.safe_load(f)
 
 
-def load_answers(path: str) -> dict:
+def load_answers(path: str) -> tuple[dict, dict | None]:
+    """Returns (answers, metadata). metadata is None for flat (unwrapped) answer files."""
     with open(path) as f:
-        return json.load(f)
+        data = json.load(f)
+    if "answers" in data and "metadata" in data:
+        return data["answers"], data["metadata"]
+    return data, None
 
 
 def grade_one(question: dict, answer_text: str | None) -> dict:
@@ -88,7 +92,15 @@ def main():
     args = parser.parse_args()
 
     questions = load_questions(args.questions)
-    answers = load_answers(args.answers)
+    answers, metadata = load_answers(args.answers)
+
+    if metadata:
+        print("--- run metadata ---")
+        for k, v in metadata.items():
+            if k == "question_ids":
+                continue
+            print(f"{k}: {v}")
+        print()
 
     scorecards = []
     for q in questions:
@@ -110,7 +122,7 @@ def main():
 
     if args.out:
         with open(args.out, "w") as f:
-            json.dump({"summary": summary, "scorecards": scorecards}, f, indent=2)
+            json.dump({"metadata": metadata, "summary": summary, "scorecards": scorecards}, f, indent=2)
         print(f"\nWrote full results to {args.out}")
 
 
