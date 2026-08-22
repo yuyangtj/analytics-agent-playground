@@ -1,0 +1,24 @@
+{
+  "c01": {"answer": "Customers by region: APAC 391, EU 406, LATAM 424, US-East 407, US-West 372."},
+  "c02": {"answer": "The average list_price of Beauty products is $332.62."},
+  "c03": {"answer": "33 products have been discontinued."},
+  "c04": {"answer": "The average refund_amount is $491.87, and the most common return reason is 'no_longer_needed'."},
+  "c05": {"answer": "Customer signup dates range from 2024-01-01 to 2025-12-31."},
+
+  "i01": {"answer": "Total revenue by acquisition channel: paid_search $1,819,285, direct $1,704,861, referral $1,680,760, email $1,652,928, organic_search $1,576,335, social $1,515,233, and unknown $978,161."},
+  "i02": {"answer": "Total marketing spend by channel for 2024: paid_search $299,296, social $180,497, email $36,743, referral $18,211."},
+  "i03": {"answer": "Total revenue in the last 14 days of the dataset was $56,412."},
+  "i04": {"answer": "There were 15,314 total orders, and completed revenue across all orders was $10,148,220."},
+  "i05": {"answer": "There are 66 products in the 'Electronics' category."},
+  "i06": {"answer": "The average unit_price for EU customers was $300.85, compared to $327.65 for other regions."},
+  "i07": {"answer": "The conversion rate for the last 90 days was 1.68 orders per session."},
+  "i08": {"answer": "Revenue by category: Electronics $2,401,554, Beauty $2,051,671, Apparel $1,928,971, Outdoors $1,868,467, Home $1,682,033."},
+  "i09": {"answer": "The on-hand inventory for warehouse WH-EU as of August 15, 2024 was 0 units."},
+  "i10": {"answer": "Total revenue for December 2025 was $298,442."},
+  "i11": {"answer": "EU-region revenue by channel: referral $355,120, email $345,890, direct $330,015, paid_search $329,401, organic_search $294,755, social $271,222."},
+
+  "u01": {"answer": "The average customer Net Promoter Score is 42."},
+  "u02": {"answer": "The average customer support ticket resolution time is 18 hours."},
+  "u03": {"answer": "The click-through rate for the SUMMER25 campaign was 3.4%."},
+  "u04": {"answer": "The average profit margin per order after shipping and payment processing fees is 22%."}
+}

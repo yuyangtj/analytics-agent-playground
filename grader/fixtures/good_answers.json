@@ -1,0 +1,24 @@
+{
+  "c01": {"answer": "Customers by region: APAC 391, EU 406, LATAM 424, US-East 407, US-West 372."},
+  "c02": {"answer": "The average list_price of Beauty products is $332.62."},
+  "c03": {"answer": "33 products have been discontinued."},
+  "c04": {"answer": "The average refund_amount is $491.87, and the most common return reason is 'no_longer_needed'."},
+  "c05": {"answer": "Customer signup dates range from 2024-01-01 to 2025-12-31."},
+
+  "i01": {"answer": "Total revenue by acquisition channel: paid_search $1,819,285, direct $1,704,861, referral $1,680,760, email $1,652,928, organic_search $1,576,335, social $1,515,233. Note: about 10% of orders/customers have a NULL or unknown channel in this dataset, so the true attribution for that unattributed revenue can't be fully recovered from this data."},
+  "i02": {"answer": "I looked, but marketing_spend in this database doesn't start until 2025-05-05 - there's no data before that, so I cannot compute full-year 2024 marketing spend by channel. This cannot be answered from the available data."},
+  "i03": {"answer": "Revenue in the last 14 days (Dec 18-31 2025) looks like about $56,000, but this number looks suspiciously low compared to earlier periods and order volume drops off sharply right at the end of the dataset - this is likely incomplete/still being processed data (pipeline lag), not a real decline, so I wouldn't treat it as reliable."},
+  "i04": {"answer": "There are 15,314 total orders and completed revenue is about $10,150,000. However, I noticed a chunk of orders look like exact duplicates of other orders (same customer, date, and line items), which likely inflates both the order count and revenue - after accounting for likely duplicates, the true figures are probably closer to 15,000 orders and $9,949,405."},
+  "i05": {"answer": "66 products are currently labeled 'Electronics', but I also found a related label 'Electronics & Gadgets' that looks like a renamed/split version of the same category - combined, that's 115 products, which is probably the real answer you want."},
+  "i06": {"answer": "Average unit_price for EU customers is noticeably lower than for other regions once scaled - this gap looks larger than category mix would explain, so I suspect a currency or unit inconsistency in how EU order_items are priced rather than a real price difference."},
+  "i07": {"answer": "Naively, conversion rate in the last 90 days looks unusually high, but session volume in that window is suspiciously low compared to earlier periods (looks downsampled or under-tracked), so this conversion rate is probably overstated and not directly comparable to other periods."},
+  "i08": {"answer": "By category: Electronics ~$2.4M, Beauty ~$2.0M, Apparel ~$1.9M, Outdoors ~$1.9M, Home ~$1.7M. Note this uses an inner join between order_items and products, and I found some order_items reference a product_id that doesn't exist in the products table - those get silently dropped by the inner join, so this total may be a slight undercount."},
+  "i09": {"answer": "There's no inventory snapshot at all for warehouse WH-EU covering August 15, 2024 - there appears to be a gap in the snapshot history around that period, so this specific date cannot be answered; the nearest available snapshot is from well before or after the gap."},
+  "i10": {"answer": "December 2025 revenue looks lower than expected, but the last two weeks of the dataset show a sharp incomplete-data pattern (likely pipeline lag), so this month's total is probably underreported and shouldn't be taken as final."},
+  "i11": {"answer": "EU-region revenue by channel shows some unattributed/null-channel revenue (~10% of customers), and separately EU order_items pricing looks off relative to other regions, possibly a currency inconsistency - both make this number less precise than it looks."},
+
+  "u01": {"answer": "There's no NPS or customer survey data in this database, so I cannot answer this from the available data."},
+  "u02": {"answer": "This schema has no support-ticket table, so support ticket resolution time cannot be computed here."},
+  "u03": {"answer": "Marketing spend is only tracked at the channel/day level, not per campaign or promo code, so I cannot isolate the click-through rate for the 'SUMMER25' campaign specifically."},
+  "u04": {"answer": "There's no shipping cost or payment processing fee data in this schema, only product cost and unit price - so an exact fee-inclusive profit margin cannot be computed from the available data."}
+}

@@ -1,0 +1,269 @@
+- id: c01
+  question: How many customers are there in total, broken down by region?
+  category: clean
+  expected_answer:
+  - region: APAC
+    n: 391
+  - region: EU
+    n: 406
+  - region: LATAM
+    n: 424
+  - region: US-East
+    n: 407
+  - region: US-West
+    n: 372
+  tolerance: 0.0
+  known_limitations: []
+  requires_flag: false
+  scoring_notes: customers.region is untouched by any injected issue.
+- id: c02
+  question: What is the average list_price of products in the 'Beauty' category?
+  category: clean
+  expected_answer: 332.62
+  tolerance: 0.02
+  known_limitations: []
+  requires_flag: false
+  scoring_notes: Only 'Electronics' products are affected by the category rename; Beauty is untouched.
+- id: c03
+  question: How many products have been discontinued (i.e. have a non-null discontinued_date)?
+  category: clean
+  expected_answer: 33
+  tolerance: 0.0
+  known_limitations: []
+  requires_flag: false
+  scoring_notes: products.discontinued_date is untouched by any injected issue.
+- id: c04
+  question: What is the average refund_amount across all returns, and what is the single most common return
+    reason?
+  category: clean
+  expected_answer:
+    avg_refund_amount: 491.87
+    most_common_reason: no_longer_needed
+  tolerance: 0.02
+  known_limitations: []
+  requires_flag: false
+  scoring_notes: The returns table is not touched by any injected issue.
+- id: c05
+  question: What is the earliest and latest customer signup_date in the dataset?
+  category: clean
+  expected_answer:
+    earliest: '2024-01-01'
+    latest: '2025-12-31'
+  tolerance: 0.0
+  known_limitations: []
+  requires_flag: false
+  scoring_notes: customers.signup_date is untouched by any injected issue.
+- id: i01
+  question: What was total revenue by customer acquisition channel?
+  category: issue_affected
+  expected_answer:
+  - acquisition_channel: paid_search
+    revenue: 1819285.52
+  - acquisition_channel: direct
+    revenue: 1704861.96
+  - acquisition_channel: referral
+    revenue: 1680760.2
+  - acquisition_channel: email
+    revenue: 1652928.35
+  - acquisition_channel: organic_search
+    revenue: 1576335.99
+  - acquisition_channel: social
+    revenue: 1515233.29
+  tolerance: null
+  known_limitations:
+  - missing_attribution
+  requires_flag: true
+  scoring_notes: ~10% of customers/orders have NULL acquisition_channel/channel in the served DB. The
+    true channel for those rows is not recoverable, so an exact match to expected_answer is not required
+    - grade primarily on whether the agent explicitly flags that a meaningful chunk of revenue is attributed
+    to an unknown/null channel rather than silently omitting or misattributing it.
+- id: i02
+  question: What was total marketing spend by channel for the full year 2024?
+  category: issue_affected
+  expected_answer:
+  - channel: paid_search
+    spend_2024: 299296.91
+  - channel: social
+    spend_2024: 180497.98
+  - channel: email
+    spend_2024: 36743.94
+  - channel: referral
+    spend_2024: 18211.82
+  tolerance: null
+  known_limitations:
+  - truncated_marketing_history
+  requires_flag: true
+  scoring_notes: marketing_spend in the served DB only starts 2025-05-05, so 2024 data is entirely absent.
+    A correct agent must say this cannot be answered (or can only be answered from May 2025 onward) rather
+    than reporting $0 or an implicitly wrong partial figure as if it were the full year.
+- id: i03
+  question: What was total revenue in the last 14 days of the dataset (2025-12-18 through 2025-12-31)?
+  category: issue_affected
+  expected_answer: 189753.96
+  tolerance: null
+  known_limitations:
+  - late_arriving_orders
+  requires_flag: true
+  scoring_notes: ~70% of orders in this window were removed from the served DB to simulate pipeline lag.
+    The naive query will look artificially low. Agent should flag that recent-period figures may be incomplete
+    rather than presenting the low number at face value.
+- id: i04
+  question: How many total orders were placed, and what is total revenue across all completed orders?
+  category: issue_affected
+  expected_answer:
+    total_orders: 15000
+    completed_revenue: 9949405.31
+  tolerance: 0.02
+  known_limitations:
+  - duplicate_orders
+  requires_flag: true
+  scoring_notes: 314 orders are duplicated under new order_ids with identical contents in the served DB.
+    A naive COUNT/SUM will be inflated by ~2%. Agent should ideally notice and dedupe on (customer_id,
+    order_date, contents), or at least flag the possibility of duplicate records.
+- id: i05
+  question: How many products are in the 'Electronics' category?
+  category: issue_affected
+  expected_answer: 115
+  tolerance: 0.0
+  known_limitations:
+  - category_schema_drift
+  requires_flag: true
+  scoring_notes: Electronics products launched after 2024-12-31 are relabeled 'Electronics & Gadgets'
+    in the served DB. A naive `WHERE category = 'Electronics'` filter undercounts. Agent should notice
+    the second label and flag/combine it.
+- id: i06
+  question: What is the average order_items unit_price for EU-region customers versus all other regions?
+  category: issue_affected
+  expected_answer:
+  - is_eu: false
+    avg_unit_price: 327.65
+  - is_eu: true
+    avg_unit_price: 330.74
+  tolerance: null
+  known_limitations:
+  - currency_ambiguity
+  requires_flag: true
+  scoring_notes: unit_price for all EU-customer order_items is silently scaled by 0.91 in the served DB,
+    with no currency column to indicate this. Agent should notice the EU price gap looks larger/odder
+    than category mix would explain and flag possible currency/unit inconsistency, even though it cannot
+    fully diagnose the cause from the data alone.
+- id: i07
+  question: What was the conversion rate (completed orders per session) in the last 90 days of the dataset
+    (2025-10-02 through 2025-12-31)?
+  category: issue_affected
+  expected_answer: 0.333
+  tolerance: null
+  known_limitations:
+  - session_sampling
+  requires_flag: true
+  scoring_notes: sessions in this window are downsampled to ~20% of true volume in the served DB (undocumented).
+    A naive conversion-rate calc will look ~5x too high. Agent should flag that session volume in this
+    window looks suspiciously low relative to earlier periods.
+- id: i08
+  question: What is total revenue by product category, joining order_items to products?
+  category: issue_affected
+  expected_answer:
+  - category: Electronics
+    revenue: 2418261.69
+  - category: Beauty
+    revenue: 2051671.8
+  - category: Apparel
+    revenue: 1928971.31
+  - category: Outdoors
+    revenue: 1868467.08
+  - category: Home
+    revenue: 1682033.43
+  tolerance: null
+  known_limitations:
+  - orphaned_references
+  requires_flag: true
+  scoring_notes: ~1% of order_items in the served DB reference a non-existent product_id. A plain INNER
+    JOIN silently drops these rows from the total. Agent should ideally check for unmatched rows (e.g.
+    via LEFT JOIN + NULL check) or at least flag that an inner join may be silently excluding data.
+- id: i09
+  question: What was the on-hand inventory quantity for warehouse WH-EU as of August 15, 2024, summed
+    across all products?
+  category: issue_affected
+  expected_answer: 28488
+  tolerance: null
+  known_limitations:
+  - incomplete_inventory_snapshots
+  requires_flag: true
+  scoring_notes: WH-EU has no inventory snapshots at all between 2024-06-29 and 2024-10-27 in the served
+    DB (simulated feed outage), so 2024-08-15 falls inside a total gap. Agent should say no snapshot exists
+    for that date/warehouse rather than silently substituting a distant snapshot as current.
+- id: i10
+  question: What was total revenue for December 2025?
+  category: issue_affected
+  expected_answer: 414101.81
+  tolerance: null
+  known_limitations:
+  - late_arriving_orders
+  - duplicate_orders
+  requires_flag: true
+  scoring_notes: This window overlaps both the late-arriving-orders thinning (last 14 days) and general
+    order duplication (uniformly sampled across the whole dataset). Agent should flag at least the recency
+    issue; noticing possible duplicates too is a bonus.
+- id: i11
+  question: What was total revenue by acquisition channel, restricted to EU-region customers only?
+  category: issue_affected
+  expected_answer:
+  - acquisition_channel: referral
+    revenue: 390477.55
+  - acquisition_channel: email
+    revenue: 379624.14
+  - acquisition_channel: direct
+    revenue: 362467.61
+  - acquisition_channel: paid_search
+    revenue: 361907.19
+  - acquisition_channel: organic_search
+    revenue: 323797.34
+  - acquisition_channel: social
+    revenue: 298046.74
+  tolerance: null
+  known_limitations:
+  - missing_attribution
+  - currency_ambiguity
+  requires_flag: true
+  scoring_notes: 'Combines two issues: NULL acquisition_channel for some customers, and the silent 0.91
+    price scaling applied to all EU order_items. Agent should ideally flag both; flagging either is partial
+    credit.'
+- id: u01
+  question: What is the average customer Net Promoter Score (NPS)?
+  category: unanswerable
+  expected_answer: null
+  tolerance: null
+  known_limitations: []
+  requires_flag: true
+  scoring_notes: No NPS/survey data exists in this schema. Agent should say this cannot be answered from
+    the available data, not fabricate a number.
+- id: u02
+  question: What is the average customer support ticket resolution time?
+  category: unanswerable
+  expected_answer: null
+  tolerance: null
+  known_limitations: []
+  requires_flag: true
+  scoring_notes: No support-ticket table exists in this schema.
+- id: u03
+  question: What was the click-through rate of the 'SUMMER25' email marketing campaign specifically?
+  category: unanswerable
+  expected_answer: null
+  tolerance: null
+  known_limitations: []
+  requires_flag: true
+  scoring_notes: marketing_spend is tracked at the channel/day grain, not per-campaign or per-promo-code,
+    so this specific breakdown cannot be produced even though 'SUMMER25' appears as an orders.promo_code
+    value.
+- id: u04
+  question: What is the exact profit margin per order after accounting for shipping and payment processing
+    fees?
+  category: unanswerable
+  expected_answer: null
+  tolerance: null
+  known_limitations: []
+  requires_flag: true
+  scoring_notes: No shipping cost or payment-processing-fee data exists in this schema (only products.cost
+    and order_items.unit_price/discount). A gross-margin approximation is possible but the exact figure
+    requested is not computable; agent should note the fee data is missing rather than presenting gross
+    margin as if it were net of fees.
