@@ -1,0 +1,40 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: main
+    tables:
+      - name: customers
+        description: One row per customer.
+      - name: products
+        description: One row per product in the catalog.
+      - name: orders
+        description: One row per order.
+      - name: order_items
+        description: One row per line item within an order.
+      - name: marketing_spend
+        description: Daily marketing spend by channel.
+      - name: sessions
+        description: Website/app sessions.
+      - name: returns
+        description: One row per returned order.
+      - name: inventory
+        description: Periodic snapshots of stock levels by product and warehouse.
+
+models:
+  - name: stg_customers
+    description: 1:1 pass-through of raw.customers, no cleaning or filtering.
+  - name: stg_products
+    description: 1:1 pass-through of raw.products, no cleaning or filtering.
+  - name: stg_orders
+    description: 1:1 pass-through of raw.orders, no cleaning or filtering.
+  - name: stg_order_items
+    description: 1:1 pass-through of raw.order_items, no cleaning or filtering.
+  - name: stg_marketing_spend
+    description: 1:1 pass-through of raw.marketing_spend, no cleaning or filtering.
+  - name: stg_sessions
+    description: 1:1 pass-through of raw.sessions, no cleaning or filtering.
+  - name: stg_returns
+    description: 1:1 pass-through of raw.returns, no cleaning or filtering.
+  - name: stg_inventory
+    description: 1:1 pass-through of raw.inventory, no cleaning or filtering.

@@ -90,6 +90,35 @@ as a lower bound (an agent that flags an issue in unanticipated wording won't be
 credited). `grader/fixtures/{good,naive}_answers.json` are reference answer sets
 used to sanity-check the grader itself.
 
+## 5. dbt models (optional modeling layer)
+
+```bash
+cd dbt && ../.venv/bin/dbt run --profiles-dir .
+```
+
+Builds a small staging + marts layer on top of `data/business.duckdb` (schemas
+`main_staging` and `main_marts`): one staging model per raw table, plus
+`dim_customers`, `dim_products`, and fact tables (`fct_orders`,
+`fct_marketing_spend`, `fct_returns`, `fct_inventory_snapshots`).
+
+**This is a faithful, non-cleaning pass-through** — no dedup, no NULL coalescing, no
+dropping orphaned references, no status/date filtering. `fct_orders` specifically
+uses `LEFT JOIN` (not `INNER JOIN`) to `orders`/`customers`/`products`, so an
+orphaned `product_id`/`customer_id` shows up as a NULL join rather than being
+silently dropped. The marts carry every injected issue through exactly as raw-table
+queries would — they're not a "cleaned" alternative, just a differently-shaped view
+of the same data (groundwork for a future dbt Semantic Layer / MetricFlow metrics
+layer, and eventually a second agent experiment arm querying marts instead of raw
+tables).
+
+**Important**: DuckDB uses file-level locking. `dbt run` opens
+`data/business.duckdb` read-write, which conflicts with the agent's read-only
+connection (or vice versa) if both try to access the file at the same time. Run
+`dbt run` as a standalone step — not while `benchmark/run.py` or `agent/cli.py` is
+active — and re-run it after `python -m generator.generate` if you want the marts
+schemas refreshed (materialized as views, so they'll reflect new data automatically,
+but a fresh DB file needs `dbt run` at least once to recreate the schemas in it).
+
 ## Repo layout
 
 ```
@@ -97,6 +126,7 @@ generator/    builds the clean DB, then injects the 9 data-quality issues
 agent/        the tool-use analytics agent (run_sql loop, Claude/Kimi providers)
 benchmark/    schema doc for the agent, questions.yaml, the run.py driver
 grader/       scoring logic + CLI
+dbt/          staging + marts modeling layer on top of data/business.duckdb
 data/         generated DB + issue_log.json (gitignored, regenerate via generator.generate)
 ```
 

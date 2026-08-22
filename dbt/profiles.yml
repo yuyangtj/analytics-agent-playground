@@ -1,0 +1,8 @@
+analytics_agent_playground:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/business.duckdb
+      schema: main
+      threads: 1

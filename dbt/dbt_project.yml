@@ -1,0 +1,16 @@
+name: analytics_agent_playground
+version: "1.0.0"
+config-version: 2
+
+profile: analytics_agent_playground
+
+model-paths: ["models"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  analytics_agent_playground:
+    +materialized: view
+    staging:
+      +schema: staging
+    marts:
+      +schema: marts

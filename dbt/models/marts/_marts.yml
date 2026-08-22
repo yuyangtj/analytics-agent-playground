@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: One row per customer. Pass-through of stg_customers.
+  - name: dim_products
+    description: One row per product. Pass-through of stg_products.
+  - name: fct_orders
+    description: >
+      One row per order line item. LEFT JOINs order_items to orders, customers, and
+      products so orphaned references surface as NULLs rather than being dropped.
+      No status filtering - includes completed, cancelled, and refunded orders alike.
+  - name: fct_marketing_spend
+    description: Daily marketing spend by channel. Pass-through of stg_marketing_spend.
+  - name: fct_returns
+    description: One row per returned order. Pass-through of stg_returns.
+  - name: fct_inventory_snapshots
+    description: Periodic inventory snapshots by product and warehouse. Pass-through of stg_inventory.

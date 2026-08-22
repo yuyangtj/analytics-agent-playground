@@ -5,3 +5,7 @@ data/business.duckdb
 data/issue_log.json
 .claude/
 benchmark/results/
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
