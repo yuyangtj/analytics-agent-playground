@@ -66,10 +66,46 @@ A plain `docker compose down` (no `-v`) keeps Postgres data and the
 replication slot around, which matters if you want to test what happens to
 Debezium's snapshot/resume behavior across a restart — do that deliberately.
 
+## Populating it: the event log + replay
+
+`generator/eventlog.py` builds a replayable event stream on top of the same
+entity/event logic `generator.generate` uses for the DuckDB snapshot, except
+each row gets a lifecycle instead of a single final state: an INSERT when
+it's created, then zero or more UPDATE/DELETE events (order status changes,
+marketing spend restatements, refund corrections, late arrivals, duplicates,
+retractions). See the module docstring for the full list of mutation
+patterns. It's deterministic — same seed, same event stream — and FK-aware:
+a child row's event never lands before the parent row it references.
+
+```bash
+# apply straight to Postgres (rebuilds the event log in-process)
+.venv/bin/python -m cdc.replay --speed 100000
+
+# or dump it first and replay from the file
+.venv/bin/python -m generator.eventlog --out /tmp/events.jsonl
+.venv/bin/python -m cdc.replay --events-file /tmp/events.jsonl --speed 100000
+
+# fast, unpaced smoke test (no waiting, just checks the pipeline runs end to end)
+.venv/bin/python -m cdc.replay --speed asap --limit 5000
+```
+
+`--speed` is simulated-seconds-per-real-second: `100000` (the default)
+compresses the ~2-year generated date range into roughly 10 real minutes
+while keeping every gap strictly ordered and still measurable (a 5-day
+correction lag becomes ~4.3 real seconds, not instant) — this is what makes
+`created_at`/`updated_at` genuinely reflect arrival/correction lag rather
+than a replay-tool artifact, per the earlier design discussion. `asap`
+disables pacing (events applied back to back): ordering is still correct,
+but the *magnitude* of any lag collapses to near-zero, so use it for pure
+mechanics/smoke tests, not lag measurement. `1` replays at true real-time
+scale if you want to reproduce lag at the scale it'd actually happen at.
+
 ## Not done yet
 
-- `replay.py`: applies the generator's replayable event stream to Postgres
-  through the `business` user. Nothing populates these tables yet.
 - A consumer that materializes topic state into a queryable form (DuckDB
   sink or a small Python consumer) to diff against Postgres/the known event
   log for correctness and lag tests.
+- `inventory` snapshots are each their own INSERT (matching the DuckDB
+  table's grain) rather than a single mutable row per product+warehouse
+  updated on every stock movement — the latter would be more
+  OLTP-realistic and is a reasonable future refinement.
