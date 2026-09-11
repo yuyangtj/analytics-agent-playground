@@ -3,6 +3,7 @@ networks:
 
 volumes:
   pg-data:
+  minio-data:
 
 services:
   postgres:
@@ -67,7 +68,13 @@ services:
       retries: 10
 
   connect:
-    image: quay.io/debezium/connect:2.7
+    # quay.io/debezium/connect ships only Debezium's own connectors --
+    # extended here (see connect.Dockerfile) with FileStreamSinkConnector
+    # and Aiven's S3 sink, so change/data can be dumped to local files or an
+    # S3-compatible target (MinIO) for testing, not just Kafka topics.
+    build:
+      context: .
+      dockerfile: connect.Dockerfile
     container_name: cdc-connect
     networks: [cdc]
     depends_on:
@@ -83,15 +90,51 @@ services:
       CONFIG_STORAGE_TOPIC: cdc_connect_configs
       OFFSET_STORAGE_TOPIC: cdc_connect_offsets
       STATUS_STORAGE_TOPIC: cdc_connect_status
+    volumes:
+      - ./data/file-sink:/data/file-sink
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors"]
       interval: 5s
       timeout: 5s
       retries: 20
 
-  # Runs once: waits for Kafka Connect to be up, then registers the Debezium
-  # Postgres connector via its REST API and exits. Re-running docker compose
-  # up is idempotent -- the PUT either creates or updates the connector.
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: cdc-minio
+    networks: [cdc]
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Runs once: creates the bucket the S3 sink connector writes to, then
+  # exits. mc (MinIO's own client) ships in the minio/mc image.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: cdc-minio-init
+    networks: [cdc]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/cdc-events"
+
+  # Runs once: waits for Kafka Connect to be up, then registers every
+  # connector config under connectors/ via its REST API and exits.
+  # Re-running docker compose up is idempotent -- each PUT either creates
+  # or updates that connector.
   connector-init:
     image: curlimages/curl:8.10.1
     container_name: cdc-connector-init
@@ -99,8 +142,10 @@ services:
     depends_on:
       connect:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     volumes:
-      - ./connector-postgres.json:/connector-postgres.json:ro
+      - ./connectors:/connectors:ro
       - ./register-connector.sh:/register-connector.sh:ro
     entrypoint: ["sh", "/register-connector.sh"]
 

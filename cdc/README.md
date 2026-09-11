@@ -13,21 +13,27 @@ docker compose up -d
 ```
 
 This starts, in order: Postgres (schema auto-applied from `schema.sql` on
-first boot via `docker-entrypoint-initdb.d`), Zookeeper, Kafka, Kafka Connect
-(Debezium's connect image, which bundles the Postgres connector plugin), and
-`connector-init`, a one-shot container that registers `connector-postgres.json`
-against Connect's REST API once it's healthy. Also starts `kafka-ui` at
-http://localhost:8081 for browsing topics/messages while debugging.
+first boot via `docker-entrypoint-initdb.d`), Zookeeper, Kafka, MinIO (+
+`minio-init`, which creates its bucket), Kafka Connect (built from
+`connect.Dockerfile` -- see "Sinks: files and MinIO/S3" below for why this
+is a custom image rather than the plain Debezium one), and
+`connector-init`, a one-shot container that registers every config under
+`connectors/*.json` against Connect's REST API once it's healthy. Also
+starts `kafka-ui` at http://localhost:8081 for browsing topics/messages
+while debugging, and MinIO's own console at http://localhost:9001
+(`minioadmin`/`minioadmin`).
 
-Check the connector actually came up:
+Check every connector actually came up:
 
 ```bash
-curl -s localhost:8083/connectors/postgres-source/status | jq
+for c in postgres-source file-sink s3-sink; do
+  curl -s localhost:8083/connectors/$c/status | jq '{name, connector: .connector.state, task: .tasks[0].state}'
+done
 ```
 
-`.connector.state` and `.tasks[0].state` should both read `RUNNING`. If the
-task is `FAILED`, `.tasks[0].trace` has the reason (common cause: Postgres
-wasn't done applying `schema.sql` yet when Connect first tried to snapshot --
+Each should read `RUNNING`/`RUNNING`. If a task is `FAILED`, `.tasks[0].trace`
+has the reason (a common one for `postgres-source`: Postgres wasn't done
+applying `schema.sql` yet when Connect first tried to snapshot --
 `connector-init` retries via the PUT being idempotent, but check the trace).
 
 ## What you get
@@ -42,10 +48,10 @@ timestamp `ts_ms` — what `cdc/consumer.py` uses for lag measurement).
 Deletes also emit a tombstone (null-value) record afterward, per
 `tombstones.on.delete`, matching standard Kafka log-compaction convention.
 NUMERIC/DECIMAL columns need `decimal.handling.mode: double` (set in
-`connector-postgres.json`) to come through as plain numbers rather than
-base64-encoded bytes — that flag on the connector config controls value
-*encoding*, separate from `schemas.enable`, which only controls whether the
-schema is included alongside the value.
+`connectors/postgres-source.json`) to come through as plain numbers rather
+than base64-encoded bytes — that flag on the connector config controls
+value *encoding*, separate from `schemas.enable`, which only controls
+whether the schema is included alongside the value.
 
 Connect's own state (offsets, connector config, task status) lives in three
 internal topics (`cdc_connect_*`) — don't touch those, and don't write to a
@@ -151,8 +157,65 @@ group id after it's already caught up will see no new messages (that's
 correct Kafka behavior, not a bug) -- pass a different `--group-id` for a
 fresh read, or `--no-from-beginning` to only pick up what's new from here.
 
+## Sinks: files and MinIO/S3
+
+Two more sinks run alongside the DuckDB consumer above, both plain Kafka
+Connect sink connectors reading the same `business.public.*` topics --
+neither needs `cdc/consumer.py` or touches Postgres.
+
+- **`file-sink`** (`connectors/file-sink.json`) -- Kafka Connect's built-in
+  `FileStreamSinkConnector`. Dumps every topic, interleaved, as one JSON
+  object per line to `cdc/data/file-sink/business-events.jsonl` (bind-mounted
+  from the `connect` container). Good for "does the exact data reach a file
+  at all" checks; no partitioning, no batching, not meant for production use.
+- **`s3-sink`** (`connectors/s3-sink.json`) -- Aiven's
+  [S3 sink connector](https://github.com/Aiven-Open/s3-connector-for-apache-kafka),
+  writing one partitioned JSONL object per topic to a bucket on the `minio`
+  service (an S3-API-compatible local object store -- no real AWS account or
+  credentials involved). Browse results with `mc` or the MinIO console:
+
+  ```bash
+  docker run --rm --network cdc_cdc --entrypoint sh quay.io/minio/mc:latest -c "
+    mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null
+    mc ls --recursive local/cdc-events
+  "
+  ```
+
+  Objects land as `<topic>/<partition>-<start_offset>.jsonl`. The connector
+  batches in memory and flushes on Connect's offset-commit interval (default
+  60s) or on a rebalance/shutdown -- don't expect an object to appear the
+  instant a message is produced; that lag is itself worth measuring if
+  you're testing a files/S3-shaped downstream path rather than a live
+  consumer.
+
+**Why a custom Connect image (`connect.Dockerfile`)**: verified directly
+against a running container (`GET /connector-plugins`) that
+`quay.io/debezium/connect` ships *only* Debezium's own source connectors
+plus its JDBC sink -- no file or S3 sink, even though
+`FileStreamSinkConnector`'s jar happens to already sit in `/kafka/libs`
+(it's excluded because `plugin.path` is scoped to `/kafka/connect`, and
+Connect's isolated classloader mode ignores anything outside that path).
+`connect.Dockerfile` adds both: `FileStreamSinkConnector` by copying that
+already-present jar into a scanned plugin directory (no download), and
+Aiven's S3 connector by downloading its release tarball. Confirmed by
+reading its bytecode directly (not assumed from docs) that it calls
+`withPathStyleAccessEnabled` when building its S3 client, so `aws.s3.endpoint`
+alone is enough to point it at MinIO -- no separate path-style flag needed.
+
+**A note on Debezium Server**: the natural-sounding alternative --
+Debezium's standalone runtime, which pushes change events to a sink
+directly with no Kafka in the loop -- does *not* have an official S3/file
+sink. Its officially supported sinks are all message-broker-shaped
+(Kinesis, Pub/Sub, Pulsar, Redis Streams, NATS, RabbitMQ, ...). A community
+project (`debezium-server-batch`) adds S3/GCS/ADLS output, but it requires
+building from source with Maven and pulls in Apache Spark as a runtime
+dependency just to write files -- too heavy for what this needed. Kafka
+Connect sink connectors (above) turned out to be the lighter, better-fit
+path to "dump CDC events to files."
+
 ## Not done yet
 
-- No sink besides the DuckDB materializer above (e.g. a Kafka Connect sink
-  connector writing to files/S3, if you want to test that path specifically
-  rather than a hand-rolled consumer).
+Nothing outstanding at the sink layer for now -- DuckDB, local files, and
+MinIO/S3 are all covered. Possible future directions: Parquet/Avro output
+(both sinks above write plain JSONL), or testing what happens to each sink
+under a Kafka Connect worker restart mid-batch.
