@@ -1,0 +1,26 @@
+{
+  "name": "postgres-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "cdc_replication",
+    "database.password": "cdc_replication",
+    "database.dbname": "business",
+    "topic.prefix": "business",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "cdc_publication",
+    "publication.autocreate.mode": "disabled",
+    "slot.name": "cdc_slot",
+
+    "table.include.list": "public.customers,public.products,public.orders,public.order_items,public.marketing_spend,public.sessions,public.returns,public.inventory",
+
+    "tombstones.on.delete": "true",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}
