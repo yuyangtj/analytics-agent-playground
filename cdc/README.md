@@ -84,6 +84,17 @@ retractions). See the module docstring for the full list of mutation
 patterns. It's deterministic — same seed, same event stream — and FK-aware:
 a child row's event never lands before the parent row it references.
 
+`inventory` is the one table shaped differently from its DuckDB counterpart:
+the DuckDB table keeps one row per weekly snapshot (`generator/schema.py`'s
+grain, needed for the benchmark's questions), but the Postgres/CDC table
+(`cdc/schema.sql`) keeps a single mutable row per `(product_id, warehouse)`
+that gets `UPDATE`d in place on every stock movement — a real OLTP
+inventory table has nothing to `INSERT` after the first row exists, and a
+pile of historical snapshot rows would give CDC nothing to actually
+capture. The event log reflects this: the first weekly snapshot for a given
+product+warehouse is an INSERT, every later one is an UPDATE of that same
+row.
+
 ```bash
 # apply straight to Postgres (rebuilds the event log in-process)
 .venv/bin/python -m cdc.replay --speed 100000
@@ -142,10 +153,6 @@ fresh read, or `--no-from-beginning` to only pick up what's new from here.
 
 ## Not done yet
 
-- `inventory` snapshots are each their own INSERT (matching the DuckDB
-  table's grain) rather than a single mutable row per product+warehouse
-  updated on every stock movement — the latter would be more
-  OLTP-realistic and is a reasonable future refinement.
 - No sink besides the DuckDB materializer above (e.g. a Kafka Connect sink
   connector writing to files/S3, if you want to test that path specifically
   rather than a hand-rolled consumer).

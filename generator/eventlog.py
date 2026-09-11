@@ -289,18 +289,33 @@ def build_event_log(seed: int = config.SEED) -> list[Event]:
             lag = rng.randint(*DELETE_LAG_DAYS)
             b.add(ts + timedelta(days=lag), "returns", "delete", {"return_id": row["return_id"]})
 
-    # inventory: each weekly snapshot is its own row/insert. (A more
-    # OLTP-realistic model would keep one mutable row per product+warehouse
-    # and UPDATE it on every stock movement -- left as a future refinement;
-    # for now each snapshot date is a distinct insert, matching the DuckDB
-    # table's grain.)
+    # inventory: one mutable row per (product_id, warehouse) -- the first
+    # weekly snapshot for a given product+warehouse is an INSERT, every
+    # subsequent one is an UPDATE of the same row (a real inventory table
+    # gets adjusted in place on each stock movement, not appended to).
+    # generate_inventory() emits rows in ascending snapshot_date order
+    # within each (product_id, warehouse) group, so the first row seen per
+    # key is always the correct one to INSERT.
     next_inventory_id = 1
+    inventory_id_by_key: dict[tuple[int, str], int] = {}
     for _, row in inventory.iterrows():
-        iid = next_inventory_id
-        next_inventory_id += 1
-        payload = {"inventory_id": iid, **row.to_dict()}
+        key = (row["product_id"], row["warehouse"])
         ts = _after(b.maybe_late(_dt(row["snapshot_date"])), product_insert_ts.get(row["product_id"]))
-        b.add(ts, "inventory", "insert", {"inventory_id": iid}, payload)
+        if key not in inventory_id_by_key:
+            iid = next_inventory_id
+            next_inventory_id += 1
+            inventory_id_by_key[key] = iid
+            payload = {"inventory_id": iid, **row.to_dict()}
+            b.add(ts, "inventory", "insert", {"inventory_id": iid}, payload)
+        else:
+            iid = inventory_id_by_key[key]
+            payload = {
+                "snapshot_date": row["snapshot_date"],
+                "quantity_on_hand": row["quantity_on_hand"],
+                "quantity_reserved": row["quantity_reserved"],
+                "reorder_point": row["reorder_point"],
+            }
+            b.add(ts, "inventory", "update", {"inventory_id": iid}, payload)
 
     return b.finish()
 

@@ -92,8 +92,16 @@ CREATE TABLE returns (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- One mutable row per (product_id, warehouse), not one row per weekly
+-- snapshot -- the DuckDB copy (generator/schema.py) keeps the snapshot-per-
+-- row grain for the benchmark's questions, but that shape has nothing for
+-- CDC to capture after the initial load: an OLTP inventory table gets
+-- UPDATEd in place on every stock movement, and it's that update stream
+-- (not a pile of historical snapshot rows) that a real CDC pipeline is
+-- built to keep up with. snapshot_date here means "as of this update", not
+-- a row's own identity -- see generator/eventlog.py's inventory section.
 CREATE TABLE inventory (
-    inventory_id BIGINT PRIMARY KEY,  -- surrogate: DuckDB version keys on (product_id, warehouse, snapshot_date)
+    inventory_id BIGINT PRIMARY KEY,  -- surrogate: one row per (product_id, warehouse)
     product_id BIGINT NOT NULL REFERENCES products(product_id),
     warehouse VARCHAR NOT NULL,
     snapshot_date DATE NOT NULL,
@@ -102,7 +110,7 @@ CREATE TABLE inventory (
     reorder_point INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (product_id, warehouse, snapshot_date)
+    UNIQUE (product_id, warehouse)
 );
 
 -- Keep updated_at honest on every UPDATE, independent of whatever the replay
