@@ -49,6 +49,7 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+      - "29092:29092"
     environment:
       ZOOKEEPER_CONNECT: zookeeper:2181
       # advertise a listener reachable from both other containers (kafka:9092)
@@ -59,7 +60,8 @@ services:
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      # not on PATH in this image -- full path required
+      test: ["CMD-SHELL", "/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -99,16 +101,12 @@ services:
         condition: service_healthy
     volumes:
       - ./connector-postgres.json:/connector-postgres.json:ro
-    entrypoint:
-      - sh
-      - -c
-      - >
-        curl -sf -X PUT -H "Content-Type: application/json"
-        --data @/connector-postgres.json
-        http://connect:8083/connectors/postgres-source/config
-        && echo "connector registered"
+      - ./register-connector.sh:/register-connector.sh:ro
+    entrypoint: ["sh", "/register-connector.sh"]
 
-  # Optional: browse topics/messages at http://localhost:8080 while debugging.
+  # Optional: browse topics/messages at http://localhost:8081 while debugging.
+  # (8081 host-side, not 8080 -- avoids clashing with other local services;
+  # the container's own port stays 8080.)
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: cdc-kafka-ui
@@ -117,7 +115,7 @@ services:
       - kafka
       - connect
     ports:
-      - "8080:8080"
+      - "8081:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: cdc
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
