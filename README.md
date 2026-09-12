@@ -5,6 +5,27 @@ issues, plus a benchmark that measures whether an analytics agent can (1) answer
 business questions correctly and (2) recognize when the data is missing, ambiguous,
 or unreliable rather than confidently answering anyway.
 
+```mermaid
+flowchart TB
+    subgraph benchmark["Agent benchmark (sections 1-5)"]
+        GEN["generator/generate.py"] --> DUCK[("data/business.duckdb<br/>+ issue_log.json")]
+        DUCK --> AGENT["agent/ (Claude/Kimi)"]
+        DUCK --> DBT["dbt staging + marts"]
+        AGENT --> GRADER["grader/ (correctness + awareness)"]
+    end
+
+    subgraph cdc["CDC pipeline (section 6, cdc/)"]
+        EL["generator/eventlog.py"] --> PG[("Postgres")]
+        PG --> DBZ["Debezium / Kafka Connect"] --> SINKS["DuckDB, files, MinIO/S3"]
+    end
+```
+
+Two independent test arms sharing only the `generator/` entity/event logic:
+the benchmark asks whether an *agent* answers correctly and notices bad data;
+the CDC pipeline asks whether a *change-data-capture pipeline* propagates
+changes correctly and how much lag it introduces. Neither depends on the
+other's output — see `cdc/README.md` for that arm's own diagram and details.
+
 ## Setup
 
 ```bash
