@@ -174,6 +174,9 @@ cdc/          Postgres + Debezium/Kafka Connect CDC pipeline (replay, consumer,
 data/         generated DB + issue_log.json (gitignored, regenerate via generator.generate)
 ```
 
+See `CHANGELOG.md` for what's implemented as of each tagged release
+(`baseline-v1`, `cdc-v1`, ...) and what's new incrementally at each one.
+
 ## Regenerating questions.yaml
 
 `benchmark/questions.yaml`'s expected answers are computed from a clean
