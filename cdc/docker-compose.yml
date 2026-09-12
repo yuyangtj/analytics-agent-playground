@@ -1,0 +1,168 @@
+networks:
+  cdc:
+
+volumes:
+  pg-data:
+  minio-data:
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: cdc-postgres
+    networks: [cdc]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: business
+      POSTGRES_PASSWORD: business
+      POSTGRES_DB: business
+    # wal_level=logical (+ enough slots/senders for Debezium's replication
+    # slot) can't be set from schema.sql -- it's a server param, not DDL.
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=4"
+      - "-c"
+      - "max_wal_senders=4"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U business -d business"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  zookeeper:
+    image: quay.io/debezium/zookeeper:2.7
+    container_name: cdc-zookeeper
+    networks: [cdc]
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: quay.io/debezium/kafka:2.7
+    container_name: cdc-kafka
+    networks: [cdc]
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      ZOOKEEPER_CONNECT: zookeeper:2181
+      # advertise a listener reachable from both other containers (kafka:9092)
+      # and the host (localhost:29092), so a consumer running outside compose
+      # (e.g. the stream processor in stage 3) can still connect.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    healthcheck:
+      # not on PATH in this image -- full path required
+      test: ["CMD-SHELL", "/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  connect:
+    # quay.io/debezium/connect ships only Debezium's own connectors --
+    # extended here (see connect.Dockerfile) with FileStreamSinkConnector
+    # and Aiven's S3 sink, so change/data can be dumped to local files or an
+    # S3-compatible target (MinIO) for testing, not just Kafka topics.
+    build:
+      context: .
+      dockerfile: connect.Dockerfile
+    container_name: cdc-connect
+    networks: [cdc]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: cdc-connect
+      CONFIG_STORAGE_TOPIC: cdc_connect_configs
+      OFFSET_STORAGE_TOPIC: cdc_connect_offsets
+      STATUS_STORAGE_TOPIC: cdc_connect_status
+    volumes:
+      - ./data/file-sink:/data/file-sink
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: cdc-minio
+    networks: [cdc]
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Runs once: creates the bucket the S3 sink connector writes to, then
+  # exits. mc (MinIO's own client) ships in the minio/mc image.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: cdc-minio-init
+    networks: [cdc]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/cdc-events"
+
+  # Runs once: waits for Kafka Connect to be up, then registers every
+  # connector config under connectors/ via its REST API and exits.
+  # Re-running docker compose up is idempotent -- each PUT either creates
+  # or updates that connector.
+  connector-init:
+    image: curlimages/curl:8.10.1
+    container_name: cdc-connector-init
+    networks: [cdc]
+    depends_on:
+      connect:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./connectors:/connectors:ro
+      - ./register-connector.sh:/register-connector.sh:ro
+    entrypoint: ["sh", "/register-connector.sh"]
+
+  # Optional: browse topics/messages at http://localhost:8081 while debugging.
+  # (8081 host-side, not 8080 -- avoids clashing with other local services;
+  # the container's own port stays 8080.)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: cdc-kafka-ui
+    networks: [cdc]
+    depends_on:
+      - kafka
+      - connect
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: cdc
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
