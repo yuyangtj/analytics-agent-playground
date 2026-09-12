@@ -119,14 +119,37 @@ active — and re-run it after `python -m generator.generate` if you want the ma
 schemas refreshed (materialized as views, so they'll reflect new data automatically,
 but a fresh DB file needs `dbt run` at least once to recreate the schemas in it).
 
+## 6. CDC pipeline (optional)
+
+```bash
+cd cdc && docker compose up -d
+.venv/bin/python -m generator.eventlog          # preview the replayable event stream
+.venv/bin/python -m cdc.replay --speed 100000   # apply it to Postgres, paced
+.venv/bin/python -m cdc.consumer --idle-exit 20 # materialize Kafka's view into DuckDB
+.venv/bin/python -m cdc.verify                  # diff the sink against Postgres + report lag
+```
+
+A second, independent test arm alongside the agent benchmark above — this one
+tests change-data-capture correctness and lag rather than agent behavior.
+`generator/eventlog.py` gives every row a lifecycle (inserts, corrections, late
+arrivals, duplicates, retractions) instead of a single final state, replays it
+into Postgres (`cdc/replay.py`), and Debezium/Kafka Connect streams the changes
+to three different sinks: a DuckDB materializer, a local JSONL file, and a
+MinIO/S3 bucket. See `cdc/README.md` for the full pipeline, what each piece
+verifies, and known limitations. Fully independent of `data/business.duckdb` and
+the sections above — nothing here touches the agent or the benchmark.
+
 ## Repo layout
 
 ```
-generator/    builds the clean DB, then injects the 9 data-quality issues
+generator/    builds the clean DB, then injects the 9 data-quality issues;
+              generator/eventlog.py builds the CDC pipeline's replayable event stream
 agent/        the tool-use analytics agent (run_sql loop, Claude/Kimi providers)
 benchmark/    schema doc for the agent, questions.yaml, the run.py driver
 grader/       scoring logic + CLI
 dbt/          staging + marts modeling layer on top of data/business.duckdb
+cdc/          Postgres + Debezium/Kafka Connect CDC pipeline (replay, consumer,
+              verify, and DuckDB/file/MinIO sinks) -- see cdc/README.md
 data/         generated DB + issue_log.json (gitignored, regenerate via generator.generate)
 ```
 

@@ -4,8 +4,6 @@
   "topics": "business.public.customers,business.public.products,business.public.orders,business.public.order_items,business.public.marketing_spend,business.public.sessions,business.public.returns,business.public.inventory",
   "file": "/data/file-sink/business-events.jsonl",
 
-  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-  "key.converter.schemas.enable": "false",
-  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-  "value.converter.schemas.enable": "false"
+  "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+  "value.converter": "org.apache.kafka.connect.storage.StringConverter"
 }
