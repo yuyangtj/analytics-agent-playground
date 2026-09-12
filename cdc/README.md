@@ -5,6 +5,36 @@ Reuses `generator/`'s entity/event logic to write and mutate rows over time so
 there's something for CDC to actually capture — see `schema.sql` for the table
 DDL and how it differs from the DuckDB copy in `generator/schema.py`.
 
+```mermaid
+flowchart LR
+    EL["generator/eventlog.py<br/>(replayable event stream)"] -->|cdc/replay.py, paced| PG[("Postgres<br/>wal_level=logical")]
+
+    subgraph connect["Kafka Connect (connect.Dockerfile)"]
+        DBZ["postgres-source<br/>(Debezium)"]
+        FS["file-sink<br/>(FileStreamSinkConnector)"]
+        S3["s3-sink<br/>(Aiven S3 connector)"]
+    end
+
+    PG -- "logical replication<br/>(cdc_publication / cdc_slot)" --> DBZ
+    DBZ -->|"business.public.*<br/>topics"| KAFKA[("Kafka")]
+    KAFKA --> FS
+    KAFKA --> S3
+    KAFKA --> CONSUMER["cdc/consumer.py"]
+
+    FS --> FILE[/"cdc/data/file-sink/<br/>*.jsonl"/]
+    S3 --> MINIO[("MinIO<br/>cdc-events bucket")]
+    CONSUMER --> DUCK[("DuckDB<br/>materialized.duckdb")]
+
+    DUCK -.->|"row-parity + lag diff"| VERIFY["cdc/verify.py"]
+    PG -.-> VERIFY
+```
+
+Three sinks read off the same Kafka topics independently: `cdc/consumer.py`
+materializes current state into DuckDB (for `cdc/verify.py`'s correctness/lag
+checks), `file-sink` dumps plain local JSONL, and `s3-sink` writes partitioned
+JSONL objects to a local MinIO bucket. None of them talk to each other or to
+Postgres directly — Kafka is the only thing all three read from.
+
 ## Bring it up
 
 ```bash
