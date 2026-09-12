@@ -10,7 +10,9 @@
   "format.output.type": "jsonl",
   "format.output.fields": "value",
   "file.compression.type": "none",
-  "file.name.template": "{{topic}}/{{partition:padding=true}}-{{start_offset:padding=true}}.jsonl",
+  "file.name.template": "{{topic}}/dt={{timestamp:unit=yyyy}}-{{timestamp:unit=MM}}-{{timestamp:unit=dd}}/{{partition:padding=true}}-{{start_offset:padding=true}}.jsonl",
+  "timestamp.source": "event",
+  "file.name.timestamp.timezone": "UTC",
 
   "aws.s3.bucket.name": "cdc-events",
   "aws.s3.endpoint": "http://minio:9000",

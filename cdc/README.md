@@ -35,6 +35,10 @@ checks), `file-sink` dumps plain local JSONL, and `s3-sink` writes partitioned
 JSONL objects to a local MinIO bucket. None of them talk to each other or to
 Postgres directly — Kafka is the only thing all three read from.
 
+See `ARCHITECTURE_DECISIONS.md` for *why* this is shaped the way it is —
+notably why three independent sinks read the same Kafka topics instead of
+one canonical path, and why the file/object-storage sinks are date-partitioned.
+
 ## Bring it up
 
 ```bash
@@ -211,12 +215,19 @@ neither needs `cdc/consumer.py` or touches Postgres.
   "
   ```
 
-  Objects land as `<topic>/<partition>-<start_offset>.jsonl`. The connector
-  batches in memory and flushes on Connect's offset-commit interval (default
-  60s) or on a rebalance/shutdown -- don't expect an object to appear the
-  instant a message is produced; that lag is itself worth measuring if
-  you're testing a files/S3-shaped downstream path rather than a live
-  consumer.
+  Objects land Hive-partitioned by event date:
+  `<topic>/dt=<yyyy>-<mm>-<dd>/<partition>-<start_offset>.jsonl`, keyed off
+  the Kafka record's own timestamp (`timestamp.source: event`, i.e. when
+  Debezium produced the message -- close to when the underlying Postgres
+  change actually committed) rather than when the sink happened to process
+  it. This is what makes the bucket usable as raw storage other consumers
+  can scan by day instead of always reading one ever-growing object per
+  topic -- see `ARCHITECTURE_DECISIONS.md` (ADR-2) for why this wasn't there
+  from the start. The connector batches in memory and flushes on Connect's
+  offset-commit interval (default 60s) or on a rebalance/shutdown -- don't
+  expect an object to appear the instant a message is produced; that lag is
+  itself worth measuring if you're testing a files/S3-shaped downstream path
+  rather than a live consumer.
 
 **Why a custom Connect image (`connect.Dockerfile`)**: verified directly
 against a running container (`GET /connector-plugins`) that
@@ -245,7 +256,12 @@ path to "dump CDC events to files."
 
 ## Not done yet
 
-Nothing outstanding at the sink layer for now -- DuckDB, local files, and
-MinIO/S3 are all covered. Possible future directions: Parquet/Avro output
-(both sinks above write plain JSONL), or testing what happens to each sink
-under a Kafka Connect worker restart mid-batch.
+- **No automated correctness check for `file-sink`/`s3-sink`**, unlike the
+  DuckDB path (`cdc/verify.py`). Both have been verified by hand (sample
+  output, line counts, JSON-parse checks) but not by a repeatable script the
+  way the DuckDB sink is -- see ADR-1 in `ARCHITECTURE_DECISIONS.md`.
+- `file-sink` has no partitioning (Kafka's built-in `FileStreamSinkConnector`
+  has no templating mechanism) -- accepted as-is, see ADR-2.
+- Possible future directions: Parquet/Avro output (both sinks currently write
+  plain JSONL), or testing what happens to each sink under a Kafka Connect
+  worker restart mid-batch.
