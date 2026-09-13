@@ -5,6 +5,8 @@ __pycache__/
 data/business.duckdb
 data/issue_log.json
 cdc/materialized.duckdb
+cdc/batch_materialized.duckdb
+cdc/batch_load_state.json
 cdc/data/
 .claude/
 benchmark/results/

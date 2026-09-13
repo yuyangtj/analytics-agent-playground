@@ -25,7 +25,10 @@ flowchart LR
     S3 --> MINIO[("MinIO<br/>cdc-events bucket")]
     CONSUMER --> DUCK[("DuckDB<br/>materialized.duckdb")]
 
+    MINIO -->|"cdc/batch_load.py<br/>(incremental, on demand)"| BATCHDUCK[("DuckDB<br/>batch_materialized.duckdb")]
+
     DUCK -.->|"row-parity + lag diff"| VERIFY["cdc/verify.py"]
+    BATCHDUCK -.-> VERIFY
     PG -.-> VERIFY
 ```
 
@@ -34,6 +37,11 @@ materializes current state into DuckDB (for `cdc/verify.py`'s correctness/lag
 checks), `file-sink` dumps plain local JSONL, and `s3-sink` writes partitioned
 JSONL objects to a local MinIO bucket. None of them talk to each other or to
 Postgres directly — Kafka is the only thing all three read from.
+`cdc/batch_load.py` is a fourth, independent path onto the *same* underlying
+data: instead of reading Kafka, it reads `s3-sink`'s bucket back
+incrementally, on its own schedule, into its own DuckDB file -- see
+`ARCHITECTURE_DECISIONS.md` (ADR-5) for how that compares to the streaming
+consumer.
 
 See `ARCHITECTURE_DECISIONS.md` for *why* this is shaped the way it is —
 notably why three independent sinks read the same Kafka topics instead of
@@ -254,12 +262,41 @@ dependency just to write files -- too heavy for what this needed. Kafka
 Connect sink connectors (above) turned out to be the lighter, better-fit
 path to "dump CDC events to files."
 
+## Batch loading: reading the raw storage back, incrementally
+
+`cdc/consumer.py` (above) is a live Kafka consumer. `cdc/batch_load.py` is a
+different path to the same materialized-DuckDB outcome: it reads directly
+from the `s3-sink` bucket instead of Kafka, on demand rather than
+continuously, loading only whatever's landed since it last ran.
+
+```bash
+# process whatever's new, then exit
+.venv/bin/python -m cdc.batch_load
+
+# repeat every 5 minutes, forever, instead of running once
+.venv/bin/python -m cdc.batch_load --loop 300
+```
+
+It tracks which objects it's already loaded in `cdc/batch_load_state.json`
+(one entry per object key -- objects are never rewritten once flushed, so
+this is exact, not a fuzzy date watermark) and writes to its own
+`cdc/batch_materialized.duckdb`, kept separate from `cdc/consumer.py`'s
+`materialized.duckdb` on purpose: `cdc/verify.py --materialized
+cdc/batch_materialized.duckdb` runs the identical row-parity check against
+the batch path, and both loaders' `_cdc_lag_log` tables share a `loader`
+column (`'stream'`/`'batch'`) so their lag is directly comparable -- see
+`ARCHITECTURE_DECISIONS.md` (ADR-5) for what that comparison actually
+showed (batch lag dominated by `s3-sink`'s flush interval, an order of
+magnitude higher than streaming lag).
+
 ## Not done yet
 
-- **No automated correctness check for `file-sink`/`s3-sink`**, unlike the
-  DuckDB path (`cdc/verify.py`). Both have been verified by hand (sample
-  output, line counts, JSON-parse checks) but not by a repeatable script the
-  way the DuckDB sink is -- see ADR-1 in `ARCHITECTURE_DECISIONS.md`.
+- **`s3-sink` now has an automated correctness check, transitively** --
+  `cdc/batch_load.py` reads its output and `cdc/verify.py` runs the same
+  row-parity check against that DuckDB file (ADR-5). **`file-sink` still
+  doesn't**: it's been verified by hand (sample output, line counts,
+  JSON-parse checks) but nothing repeatable reads it back and checks it
+  against Postgres.
 - `file-sink` has no partitioning (Kafka's built-in `FileStreamSinkConnector`
   has no templating mechanism) -- accepted as-is, see ADR-2.
 - Possible future directions: Parquet/Avro output (both sinks currently write

@@ -21,16 +21,9 @@ import sys
 import duckdb
 import psycopg
 
-TABLE_PK = {
-    "customers": "customer_id",
-    "products": "product_id",
-    "orders": "order_id",
-    "order_items": "order_item_id",
-    "marketing_spend": "marketing_spend_id",
-    "sessions": "session_id",
-    "returns": "return_id",
-    "inventory": "inventory_id",
-}
+from . import schema_map
+
+TABLE_PK = schema_map.TABLE_PK
 
 DEFAULT_DB_URL = os.environ.get("CDC_DB_URL", "postgresql://business:business@localhost:5432/business")
 
@@ -75,10 +68,10 @@ def lag_summary(duck_con: duckdb.DuckDBPyConnection) -> list[dict]:
             SELECT
                 table_name,
                 count(*) AS n,
-                min(consumer_lag_seconds) AS min_lag,
-                quantile_cont(consumer_lag_seconds, 0.5) AS p50_lag,
-                quantile_cont(consumer_lag_seconds, 0.95) AS p95_lag,
-                max(consumer_lag_seconds) AS max_lag
+                min(lag_seconds) AS min_lag,
+                quantile_cont(lag_seconds, 0.5) AS p50_lag,
+                quantile_cont(lag_seconds, 0.95) AS p95_lag,
+                max(lag_seconds) AS max_lag
             FROM _cdc_lag_log
             GROUP BY table_name
             ORDER BY table_name
