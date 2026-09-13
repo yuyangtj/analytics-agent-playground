@@ -409,10 +409,29 @@ with `.slice(0, 10)`, `needs_reorder`'s boolean-ness), and the exact
 combined-filter query shapes the JS builds via `URLSearchParams`, re-run
 directly against the live API outside the browser.
 
-**Not verified — recorded honestly, not glossed over**: actual visual
-rendering. No browser automation tool was available in the environment
-this was built in (`mcp__claude-in-chrome` reported no extension
-connected), so the page's layout, the charts actually drawing, and any
-runtime JS errors invisible to a plain HTTP check were never observed
-directly. Everything checked out at the data/wiring level; the rendered
-page itself is unconfirmed.
+**Was not verified at merge time — recorded honestly rather than glossed
+over — and that gap immediately caught a real bug**: no browser automation
+tool was available in the environment this was built in
+(`mcp__claude-in-chrome` reported no extension connected), so the page's
+actual rendering was never observed directly before merging. The user
+opened it in a real browser shortly after and sent a screenshot: both
+charts were blank, and — more tellingly — the data table that should render
+directly below the revenue chart was missing too, even though table
+rendering doesn't depend on Chart.js at all. That combination pointed at
+the chart call throwing and aborting the rest of the function before the
+table-render call ever ran, not a data problem (the health line and filter
+dropdowns in the screenshot were populated correctly).
+
+Root cause, found by checking the CDN URL directly rather than guessing:
+`Chart.js/4.4.4/chart.umd.min.js` 404'd — that exact version was never
+published to cdnjs (confirmed via cdnjs's own API, which reports `4.5.1` as
+current). Fixed the version pin, and separately hardened `app.js` itself:
+added a `safeChart()` wrapper (`try`/`catch` around `new Chart(...)`) so a
+chart failure — this exact CDN issue, an ad-blocker, any future hiccup —
+can never again take the table in the same section down with it. Verified
+the fix two ways: the corrected CDN URL returns `200` directly, and
+`safeChart`'s catch behavior was unit-tested in isolation under Node with
+`Chart` deliberately left undefined (simulating the exact failure that
+happened), confirming it catches and returns `null` instead of throwing.
+Visual confirmation of the actual fix still comes from the same source as
+the bug report — the user, in a real browser — not from this environment.

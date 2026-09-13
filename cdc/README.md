@@ -426,12 +426,20 @@ calls need no CORS configuration at all. Once the API is running
 against what `app.js` expects (types, date-string format, the specific
 `.slice(0, 10)` truncation it applies, `needs_reorder`'s boolean-ness),
 plus the exact combined-filter query shapes the JS constructs via
-`URLSearchParams` re-run directly against the live API. **Not verified**:
-actual visual rendering (chart layout, CSS, the DOM after JS execution) --
-no browser automation was available in the environment this was built in,
-so this was checked at the data/wiring level only, not by looking at it.
-Worth an eyeball pass before trusting it looks right, not just that it
-returns right.
+`URLSearchParams` re-run directly against the live API.
+
+**Visual rendering was not checked before the first version merged** (no
+browser automation was available in the environment it was built in) --
+and that gap caught a real bug once someone actually opened it: both charts
+came back blank because the pinned `Chart.js/4.4.4` doesn't exist on cdnjs
+(404 -- confirmed against cdnjs's own API, current is `4.5.1`), and the
+missing library also silently killed the *table* in the same section,
+since the unguarded `new Chart(...)` call threw and aborted the rest of the
+function before the table-render call after it could run. Fixed the
+version pin and added a `safeChart()` wrapper so a chart failure can never
+again take its section's table down with it -- see `ARCHITECTURE_DECISIONS.md`
+ADR-9 for the full story. Still worth an eyeball pass in a real browser
+after any change here; this environment still can't visually confirm it.
 
 ## Not done yet
 

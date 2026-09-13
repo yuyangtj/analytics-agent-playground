@@ -51,6 +51,22 @@ function renderTable(container, columns, rows, rowClassFn) {
   container.appendChild(el("table", {}, [thead, tbody]));
 }
 
+function safeChart(existing, canvasId, config) {
+  // A chart failing to render (CDN hiccup, ad-blocker, a bad version pin --
+  // exactly what happened here once already) must not take the rest of the
+  // section down with it. Without this, `new Chart(...)` throwing aborts
+  // the calling function immediately, so the table render call right after
+  // it never runs either -- the whole section goes silently blank, chart
+  // and table both, with nothing but a console error to explain why.
+  if (existing) existing.destroy();
+  try {
+    return new Chart(document.getElementById(canvasId), config);
+  } catch (e) {
+    console.error(`Chart render failed for #${canvasId}:`, e);
+    return null;
+  }
+}
+
 function fillSelect(select, values, currentPlaceholderKept = true) {
   const existing = new Set(Array.from(select.options).map((o) => o.value));
   for (const v of values) {
@@ -106,9 +122,7 @@ async function loadRevenue() {
     tension: 0.2,
   }));
 
-  const ctx = document.getElementById("revenue-chart");
-  if (revenueChart) revenueChart.destroy();
-  revenueChart = new Chart(ctx, {
+  revenueChart = safeChart(revenueChart, "revenue-chart", {
     type: "line",
     data: { labels: dates, datasets },
     options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } },
@@ -143,9 +157,7 @@ async function loadCustomers() {
     backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
   }));
 
-  const ctx = document.getElementById("customers-chart");
-  if (customersChart) customersChart.destroy();
-  customersChart = new Chart(ctx, {
+  customersChart = safeChart(customersChart, "customers-chart", {
     type: "bar",
     data: { labels: regions, datasets },
     options: {
