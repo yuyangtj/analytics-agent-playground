@@ -4,6 +4,42 @@ One entry per tagged release: roughly what's implemented at that point, and
 (for everything after the first) what's new since the previous tag. Not a
 commit-by-commit log — see `git log` for that.
 
+## `cdc-v5` — 2026-09-13
+
+**Incremental since `cdc-v4`:**
+
+- **`cdc/frontend/`** (new) — a small dashboard over `cdc/api/`'s
+  endpoints: plain HTML/CSS/JS, no build step, no npm. One section per
+  mart (revenue-by-channel chart, customers-by-region chart, inventory
+  table with a needs-reorder filter, paginated/filterable orders table),
+  Chart.js from a CDN, mounted at `/app` on the same FastAPI process as
+  the API itself so no CORS configuration is needed anywhere (ADR-9).
+- **`/meta` endpoint** (new) — reports two different kinds of staleness,
+  not conflated: `marts_refreshed_at`/`_ago_seconds` (when `dbt run` last
+  wrote the marts) and `data_as_of`/`data_lag_seconds` (how far behind the
+  underlying business data is right now, folding the whole pipeline —
+  Postgres → Debezium → Kafka → `s3-sink`'s flush → last `dbt run` — into
+  one number). Backed by a new mart, `mart_data_freshness`, so the API
+  still never touches MinIO/S3 itself (ADR-10). Verified against an
+  independently-written Postgres query, exact to the microsecond. Now
+  surfaced in the frontend too, styled red past a 10-minute lag.
+- **`cdc/dbt/run.sh`** (new) — fixes a real footgun, hit live: `dbt-duckdb`'s
+  `path: cdc_raw.duckdb` in `profiles.yml` resolves relative to the
+  directory `dbt` is invoked from, not `--project-dir`. Running
+  `dbt run --project-dir cdc/dbt --profiles-dir cdc/dbt` from the repo
+  root silently created the DuckDB file at the repo root instead — no
+  error, and the API then reported "doesn't exist yet" for a run that had
+  just "succeeded." `run.sh` `cd`s into `cdc/dbt` internally so it works
+  correctly called from anywhere.
+- **Chart.js CDN fix** — the pinned version (`4.4.4`) never existed on
+  cdnjs (404), caught by the user opening the dashboard in a real browser
+  and sending a screenshot (this environment has no browser automation
+  available, so the original PR merged without ever seeing it render).
+  Fixed the version pin, and separately hardened `app.js` with a
+  `safeChart()` wrapper so a chart failure can't take its section's table
+  down with it again — that's what actually happened: the missing library
+  threw and aborted the whole section, table included, not just the chart.
+
 ## `cdc-v4` — 2026-09-13
 
 **Incremental since `cdc-v3`:**
