@@ -14,3 +14,10 @@ models:
       +schema: staging
     marts:
       +schema: marts
+      # Marts materialize as real tables, refreshed on `dbt run` -- not
+      # views. Staging stays views (each `dbt run` re-reads the bucket
+      # fresh, per ADR-7), but an API serving a frontend can't have every
+      # request trigger a full S3 rescan through several joined views.
+      # `dbt run` is the batch refresh step; querying cdc_raw.duckdb after
+      # that is a plain, fast table read.
+      +materialized: table
