@@ -203,10 +203,12 @@ fresh read, or `--no-from-beginning` to only pick up what's new from here.
 
 Two more sinks run alongside the DuckDB consumer above, both plain Kafka
 Connect sink connectors reading the same `business.public.*` topics --
-neither needs `cdc/consumer.py` or touches Postgres. Both currently write
-JSONL -- see `FILE_FORMATS.md` for the JSONL-vs-Parquet comparison and why
-that's likely to change for `s3-sink` specifically before the dbt-on-raw-
-files work.
+neither needs `cdc/consumer.py` or touches Postgres. Both write JSONL, and
+stay that way -- see `FILE_FORMATS.md` for the JSONL-vs-Parquet comparison,
+including a live-verified finding that switching `s3-sink` to Parquet
+isn't the one-line change it looks like (it needs real schemas on
+`postgres-source`, which would break `cdc/consumer.py` and
+`cdc/batch_load.py`), and why that cost isn't worth paying here.
 
 - **`file-sink`** (`connectors/file-sink.json`) -- Kafka Connect's built-in
   `FileStreamSinkConnector`. Dumps every topic, interleaved, as one JSON
