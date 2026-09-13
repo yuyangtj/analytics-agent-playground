@@ -4,6 +4,48 @@ One entry per tagged release: roughly what's implemented at that point, and
 (for everything after the first) what's new since the previous tag. Not a
 commit-by-commit log — see `git log` for that.
 
+## `cdc-v2` — 2026-09-13
+
+**Incremental since `cdc-v1`:**
+
+- **Batch loading arm** (`cdc/batch_load.py`) — a second, independent path
+  onto the same underlying data as `cdc/consumer.py`'s live Kafka consumer:
+  reads `s3-sink`'s landed objects directly from MinIO/S3, incrementally,
+  tracking exactly which object keys it's already loaded (not a timestamp
+  watermark — deliberately, since a watermark would silently miss an
+  object that lands after the watermark has already advanced past its
+  internal timestamp, which is exactly what `generator/eventlog.py`'s
+  late-arrival mutation produces). State lives in a table
+  (`_cdc_batch_load_state`) inside its own output DuckDB file, with each
+  object's data writes and its "processed" marker committing together in
+  one transaction. Writes to the same `_cdc_lag_log` shape as the
+  streaming consumer (tagged by a `loader` column), making the
+  batch-vs-streaming lag comparison a real measured number rather than a
+  claim in prose (streaming ~13-20s, batch ~70-80s in testing, dominated
+  by the sink's flush interval).
+- **`cdc/schema_map.py`** — the table/column/type maps and Debezium-envelope
+  decode logic, factored out of `cdc/consumer.py` (which had it) and
+  `cdc/verify.py` (which had an independent, drifting copy of `TABLE_PK`)
+  into one shared module both loaders import.
+- **`s3-sink` object keys are now date-partitioned** (Hive-style,
+  `dt=YYYY-MM-DD/`, keyed off the Kafka record's own event timestamp) —
+  the earlier version wrote one ever-growing object per topic forever,
+  which isn't a usable shape for "raw storage other consumers can query
+  later."
+- **`cdc/ARCHITECTURE_DECISIONS.md`** (new) — lightweight ADRs recording
+  the reasoning behind the less-obvious choices in `cdc/`: three
+  independent sinks instead of one canonical database path, the object-key
+  vs. timestamp-watermark tracking choice above, Postgres instead of
+  DuckDB as the CDC source, the replayable event-log model, and (proposed,
+  not yet implemented) switching `s3-sink` to Parquet.
+- **`cdc/FILE_FORMATS.md`** (new) — JSONL vs. Parquet comparison for the
+  raw-storage sinks, written ahead of the next arm (dbt models reading the
+  raw files directly) since that's where the read-side difference (column
+  pruning, row-group statistics on top of the path-based partition
+  pruning both formats get) stops being theoretical.
+- Architecture diagrams added to the top-level `README.md` and
+  `cdc/README.md` (Mermaid, rendered natively on GitHub).
+
 ## `cdc-v1` — 2026-09-12
 
 **Incremental since `baseline-v1`:**
