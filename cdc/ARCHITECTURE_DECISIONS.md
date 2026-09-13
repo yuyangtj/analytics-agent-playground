@@ -245,3 +245,70 @@ gets path-based partition pruning (still real) but not row-group/column
 pruning. If the Parquet read-side story is ever worth measuring for real,
 the isolated second-source-connector pattern used to verify this is the
 way to do it without touching the main pipeline's wire format.
+
+---
+
+## ADR-7: `cdc/dbt/` reads the raw storage directly, in SQL, with no incremental logic at all
+
+**Status**: Implemented (`cdc/dbt/`).
+
+**Context**: `cdc/consumer.py` and `cdc/batch_load.py` are two Python paths
+onto the same underlying MinIO data. ADR-1 raised, and the file-formats
+discussion confirmed, that a query engine reading the raw storage directly
+is the scenario this repo hadn't actually built yet — only asserted was
+possible.
+
+**Decision**: `cdc/dbt/` is a third arm: plain dbt-duckdb models whose SQL
+reads `s3-sink`'s JSONL directly off MinIO via DuckDB's `httpfs` extension.
+Staging models (`stg_cdc_*`) squash the raw change-event log into current
+state entirely in SQL (`row_number() over (partition by pk order by
+source_ts_ms desc) = 1`, excluding rows whose latest `op` is `'d'`) — the
+same logic `cdc/schema_map.py`'s `upsert`/`delete` implement procedurally in
+Python, expressed declaratively instead. Marts on top
+(`fct_cdc_orders`, `mart_revenue_by_channel`, `mart_customers_by_region`,
+`mart_inventory_current`) are real metrics, not just a passthrough of the
+staging layer.
+
+**A real pitfall found and avoided, not just theorized**: DuckDB's
+`read_json_auto` infers `before`/`after`'s type per read from whatever data
+is actually present in that read — a table with zero deletes in the sample
+gets `before` typed as generic `JSON`, a table with some deletes gets it
+typed as a proper `STRUCT`. Struct dot-access (`after.customer_id`) and JSON
+path access (`after->>'customer_id'`) are not interchangeable, so a model
+built and tested against a data slice with no deletes could silently need
+different SQL once deletes actually occur. Verified this directly before
+writing any model (not assumed): explicit JSON-path extraction
+(`value -> 'after' ->> 'col'`, forcing `columns={'value': 'JSON'}` at read
+time rather than letting `read_json_auto` infer structs) works identically
+regardless of what ops are present in a given read. Every staging model
+uses this pattern uniformly.
+
+**Deliberately no incremental logic**: every query against these models
+rescans everything matching `dt=*/*.jsonl` in the bucket, every time —
+unlike `cdc/batch_load.py`'s object-key state tracking. This is a real gap,
+accepted for now rather than fixed, because dbt's natural incremental
+mechanism (a target-table watermark) is exactly the pattern ADR-5 already
+rejected for `batch_load.py`, for the same late-arrival reason: a
+timestamp-watermark incremental model would silently miss an object that
+lands after the watermark has already advanced past its internal
+timestamp. Replicating `batch_load.py`'s exact-key tracking inside dbt/SQL
+is possible (anti-join a glob's `filename=true` column against a
+dbt-managed table of already-seen keys) but wasn't built here — bookkeeping
+`cdc/batch_load.py` already does, in Python, correctly.
+
+**Verified live, not just "it ran without error"**: every staging table's
+row count matched Postgres exactly (`customers`: 195, `sessions`: 1041 —
+the `sessions` match specifically doubles as a delete-handling check, since
+a missed delete would inflate it above Postgres's count); `orders` revenue
+by status matched Postgres exactly (`completed`: 143 orders / $9925.46,
+`cancelled`: 10 / $626.93, `refunded`: 11 / $99.67); `mart_revenue_by_channel`'s
+total matched the same $9925.46/143 figure computed via an independently-
+written Postgres aggregate (a plain `JOIN`+`SUM`, deliberately not the
+dedup/squash query the dbt models use, so it isn't just checking the same
+logic against itself).
+
+**Consequence**: `cdc/dbt/profiles.yml` is a separate dbt project/profile
+from `dbt/` (the benchmark arm) — different data source entirely (MinIO via
+`httpfs`, vs. `data/business.duckdb` directly), matching the general
+principle that the two arms of this repo stay decoupled, sharing only
+`generator/`'s entity/event logic.
