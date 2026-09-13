@@ -143,3 +143,69 @@ clamping is necessary at all). This is also why `inventory` is modeled
 differently in Postgres than in DuckDB: an OLTP inventory table has one
 mutable row per product+warehouse, updated in place on every stock movement,
 not a new row per weekly snapshot.
+
+---
+
+## ADR-5: A batch loader reading the same raw storage, incrementally, as a second path alongside the streaming consumer
+
+**Status**: Implemented (`cdc/batch_load.py`, `cdc/schema_map.py`).
+
+**Context**: `cdc/consumer.py` is a *streaming* consumer — a long-running
+Kafka subscription applying each change as it arrives. ADR-1 already
+justified landing raw events in `s3-sink`'s bucket independently of that
+consumer, partly so *other* consumers could read them later, on their own
+schedule, without touching Kafka at all. Until this ADR, nothing in this
+repo actually was that other consumer — the raw storage's reusability was
+asserted, not demonstrated.
+
+**Decision**: `cdc/batch_load.py` reads directly from the `s3-sink` bucket
+(not Kafka) and loads into its own DuckDB file, incrementally: it lists the
+bucket's objects, diffs against a `_cdc_batch_load_state` table *inside that
+same DuckDB file* (one row per already-loaded object key, with a
+`processed_at` timestamp — a real history, not just a current set), and
+only reads/applies whatever's new. Re-running it with nothing new is a
+no-op; running it again after new objects land processes only those, not a
+full rescan.
+
+State lives in the same file as the data specifically so each object's
+writes and its "processed" marker commit in one transaction
+(`BEGIN`/`COMMIT` wrapping both) — a crash mid-object can't leave the data
+applied but unmarked, or the reverse; it just leaves that one object
+unprocessed, retried whole next run. An earlier version tracked state in a
+separate local JSON file, updated with a plain file write *after* the
+object's DB writes had already happened — safe (every apply is an upsert or
+a keyed delete, both idempotent, so reprocessing was harmless) but not
+exact, and it meant two artifacts instead of one. Moved into the same
+DuckDB file once that gap was worth closing.
+
+Object keys are the natural unit to track rather than a single date
+watermark: `s3-sink` never rewrites an object once flushed (each flush
+writes a *new* object, keyed by its starting Kafka offset), so multiple
+objects can land under the same `dt=` partition over a day, and a
+watermark of "processed through 2026-09-13" wouldn't tell you which of
+that day's several objects you'd actually seen.
+
+To avoid two independently-drifting copies of the table/column/type maps
+(`cdc/consumer.py`'s original sin, before this ADR) both loaders now import
+that logic from `cdc/schema_map.py` — one place that knows Debezium's
+envelope shape, decode rules, and DuckDB schema, not two.
+
+**Consequence**: this makes the batch-vs-streaming comparison ADR-1 gestured
+at concrete rather than theoretical. Both loaders write to the same
+`_cdc_lag_log` shape (tagged `loader='stream'` or `'batch'`), so the two are
+directly comparable: streaming lag was consistently single-digit-to-tens of
+seconds in testing; batch lag was ~70-80s, dominated by `s3-sink`'s ~60s
+flush interval plus however long between batch runs. That gap *is* the
+batch/streaming tradeoff, made visible with real numbers instead of asserted
+in prose.
+
+Verified live, in two passes (once for the JSON-file version, again after
+moving state into `_cdc_batch_load_state`): replayed a slice, deleted one
+row to exercise the tombstone path, ran the loader (all 8 tables matched
+Postgres exactly, including the delete), ran it again with nothing new
+(correctly a no-op), replayed more, and confirmed the next run processed
+only the newly-landed objects — row counts matched Postgres exactly
+throughout both passes, not just at the end. `cdc/verify.py --materialized
+cdc/batch_materialized.duckdb` was run against the final state directly as
+part of the second pass, confirming the transactional rework didn't change
+the outcome, only how state is tracked.
