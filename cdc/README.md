@@ -310,19 +310,24 @@ dbt-duckdb models whose SQL reads the JSONL straight off `s3-sink`'s bucket
 via DuckDB's `httpfs` extension, no Python CDC-parsing code at all.
 
 ```bash
-cd cdc/dbt
-../../.venv/bin/dbt run --profiles-dir .
+./cdc/dbt/run.sh          # from anywhere -- e.g. the repo root
+# equivalent to, if you'd rather cd in yourself:
+#   cd cdc/dbt && ../../.venv/bin/dbt run --profiles-dir .
 ```
 
-**`cd` into `cdc/dbt` first -- don't just pass `--project-dir cdc/dbt
---profiles-dir cdc/dbt` from elsewhere.** `profiles.yml`'s `path:
-cdc_raw.duckdb` is relative to your *current working directory when you run
-`dbt`*, not to `--project-dir`. Running from the repo root with those flags
-instead of `cd`-ing in silently creates `cdc_raw.duckdb` at the repo root --
-no error, dbt reports success, and `cdc/api/` (which looks in `cdc/dbt/`)
-then reports `cdc_raw.duckdb doesn't exist yet` even though `dbt run` just
-"succeeded." If that happens: delete the stray file at the repo root and
-re-run with `cd cdc/dbt` first.
+**Use `run.sh`, or `cd` into `cdc/dbt` yourself first -- don't pass
+`--project-dir cdc/dbt --profiles-dir cdc/dbt` from elsewhere.**
+`profiles.yml`'s `path: cdc_raw.duckdb` is relative to your *current
+working directory when you run `dbt`*, not to `--project-dir`. Running from
+the repo root with those flags instead of `cd`-ing in silently creates
+`cdc_raw.duckdb` at the repo root -- no error, dbt reports success, and
+`cdc/api/` (which looks in `cdc/dbt/`) then reports `cdc_raw.duckdb doesn't
+exist yet` even though `dbt run` just "succeeded." `run.sh` exists
+specifically so this can't happen: it `cd`s into `cdc/dbt` internally
+before invoking `dbt`, regardless of where it's called from, and passes any
+args straight through (`./cdc/dbt/run.sh build`, etc.). If you've already
+hit the stray-file version of this: delete `cdc_raw.duckdb` at the repo
+root and re-run via `run.sh`.
 
 **Staging** (`models/staging/stg_cdc_*.sql`, one per table): squashes the
 raw change-event log into current state, entirely in SQL --
@@ -371,8 +376,8 @@ directly (`s3_endpoint`, `s3_url_style: path`, ...) -- separate from
 querying DuckDB directly.
 
 ```bash
-cd cdc/dbt && ../../.venv/bin/dbt run --profiles-dir .   # refresh the marts first
-cd ../.. && .venv/bin/python -m cdc.api.main             # serves on :8000, docs at /docs
+./cdc/dbt/run.sh                          # refresh the marts first
+.venv/bin/python -m cdc.api.main          # serves on :8000, docs at /docs
 ```
 
 It never touches Kafka, Postgres, or MinIO/S3 itself -- only

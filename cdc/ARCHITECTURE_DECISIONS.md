@@ -366,6 +366,21 @@ second, apparently too fast to reliably overlap with a single test
 request. Recorded honestly as unconfirmed, not silently assumed to work
 because the code looks reasonable.
 
+**A real footgun found and fixed after this ADR first shipped**:
+`dbt-duckdb`'s `path: cdc_raw.duckdb` in `profiles.yml` resolves relative
+to the *current working directory `dbt` is invoked from*, not
+`--project-dir`. Running `dbt run --project-dir cdc/dbt --profiles-dir
+cdc/dbt` from the repo root (a natural thing to try, since it's a common
+enough dbt invocation style) silently created `cdc_raw.duckdb` at the repo
+root instead — dbt reported success, no error, and the API then reported
+`doesn't exist yet` for a `dbt run` that had just "succeeded," which is
+exactly what happened. `cdc/dbt/run.sh` (new) fixes this properly rather
+than just documenting around it: it `cd`s into `cdc/dbt` internally before
+invoking `dbt`, so it can be called from anywhere (`./cdc/dbt/run.sh` from
+the repo root) and the relative path always resolves the same way
+regardless of the caller's own working directory. All docs and the API's
+own error messages now point at `run.sh`, not a bare `dbt run`.
+
 ---
 
 ## ADR-9: the frontend is plain HTML/JS mounted same-origin on the API, not a separate app

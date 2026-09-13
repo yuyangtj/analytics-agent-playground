@@ -4,7 +4,8 @@ the raw storage later, on their own schedule" idea from ARCHITECTURE_DECISIONS.m
 ADR-1, taken one step further: not just reading the data, but serving it.
 
 Reads cdc/dbt/cdc_raw.duckdb directly, read-only. Doesn't touch Kafka,
-Postgres, or MinIO/S3 itself -- `dbt run` (a separate, periodic batch step)
+Postgres, or MinIO/S3 itself -- `./cdc/dbt/run.sh` (a separate, periodic
+batch step; see that file for why it's a wrapper and not a bare `dbt run`)
 is what refreshes the mart *tables* this API queries; the API's own job is
 just fast, read-only serving of whatever's already there. Marts are
 materialized as `table`, not `view` (see cdc/dbt/dbt_project.yml), so a
@@ -53,7 +54,7 @@ def _query(sql: str, params: Optional[list] = None) -> list[dict]:
     if not os.path.exists(DB_PATH):
         raise HTTPException(
             status_code=503,
-            detail=f"{DB_PATH} doesn't exist yet -- run `dbt run` in cdc/dbt/ first.",
+            detail=f"{DB_PATH} doesn't exist yet -- run `./cdc/dbt/run.sh` first.",
         )
     try:
         con = duckdb.connect(DB_PATH, read_only=True)
@@ -65,7 +66,7 @@ def _query(sql: str, params: Optional[list] = None) -> list[dict]:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
     except duckdb.CatalogException as e:
-        raise HTTPException(status_code=503, detail=f"Mart table not found -- run `dbt run` in cdc/dbt/ first: {e}")
+        raise HTTPException(status_code=503, detail=f"Mart table not found -- run `./cdc/dbt/run.sh` first: {e}")
     finally:
         con.close()
 
@@ -76,7 +77,7 @@ def health():
     not whether the CDC pipeline itself is up (this API never touches
     Kafka/Postgres/MinIO directly)."""
     if not os.path.exists(DB_PATH):
-        return {"status": "not_ready", "detail": "cdc_raw.duckdb doesn't exist yet -- run `dbt run` in cdc/dbt/."}
+        return {"status": "not_ready", "detail": "cdc_raw.duckdb doesn't exist yet -- run `./cdc/dbt/run.sh`."}
     try:
         rows = _query("select table_name from information_schema.tables where table_schema = 'main_marts' order by 1")
         return {"status": "ok", "mart_tables": [r["table_name"] for r in rows]}
