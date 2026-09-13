@@ -365,3 +365,39 @@ the conflict — `dbt run`'s 12 tiny models finish in well under half a
 second, apparently too fast to reliably overlap with a single test
 request. Recorded honestly as unconfirmed, not silently assumed to work
 because the code looks reasonable.
+
+---
+
+## ADR-9: the frontend is plain HTML/JS mounted same-origin on the API, not a separate app
+
+**Status**: Implemented (`cdc/frontend/`, mounted via `StaticFiles` in
+`cdc/api/main.py`).
+
+**Context**: a frontend calling `cdc/api/`'s endpoints needs to be served
+from *somewhere*. The two real options were a separate dev server (Vite,
+plain `python -m http.server`, ...) with CORS configured on the API, or
+serving the static files directly off the same FastAPI process the API
+already runs.
+
+**Decision**: same process, same origin. `cdc/api/main.py` mounts
+`cdc/frontend/` at `/app` via Starlette's `StaticFiles`, registered *after*
+every API route so it can't shadow one. This sidesteps CORS entirely —
+`fetch('/metrics/...')` from a page served at `/app/` resolves against the
+origin root regardless of the page's own path, no `Access-Control-*`
+headers needed anywhere. Plain HTML/CSS/JS, no build step, no npm — matches
+this repo's existing bias (nothing else here has a JS toolchain), and
+Chart.js is loaded from a CDN rather than bundled.
+
+**Verified**: every endpoint's actual JSON response checked field-by-field
+against what `app.js` expects (types, the ISO-datetime format it truncates
+with `.slice(0, 10)`, `needs_reorder`'s boolean-ness), and the exact
+combined-filter query shapes the JS builds via `URLSearchParams`, re-run
+directly against the live API outside the browser.
+
+**Not verified — recorded honestly, not glossed over**: actual visual
+rendering. No browser automation tool was available in the environment
+this was built in (`mcp__claude-in-chrome` reported no extension
+connected), so the page's layout, the charts actually drawing, and any
+runtime JS errors invisible to a plain HTTP check were never observed
+directly. Everything checked out at the data/wiring level; the rendered
+page itself is unconfirmed.

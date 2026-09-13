@@ -10,11 +10,16 @@ just fast, read-only serving of whatever's already there. Marts are
 materialized as `table`, not `view` (see cdc/dbt/dbt_project.yml), so a
 request here is a plain DuckDB table read, not a full bucket rescan.
 
+Also serves the static frontend (cdc/frontend/) at /app -- same origin as
+the API, deliberately, so the frontend's fetch() calls need no CORS
+configuration at all: one process, one URL, no cross-origin surface.
+
 Run it:
     .venv/bin/python -m cdc.api.main
     # or: .venv/bin/uvicorn cdc.api.main:app --reload
 
-Then see the auto-generated docs at http://localhost:8000/docs.
+Then see the dashboard at http://localhost:8000/app/, or the
+auto-generated API docs at http://localhost:8000/docs.
 
 DuckDB file-locking note (same caveat as dbt/README.md's for the benchmark
 arm): don't run `dbt run` against cdc/dbt/cdc_raw.duckdb at the same moment
@@ -29,8 +34,10 @@ from typing import Optional
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 
 DB_PATH = os.environ.get("CDC_ANALYTICS_DB", os.path.join(os.path.dirname(__file__), "..", "dbt", "cdc_raw.duckdb"))
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
 app = FastAPI(
     title="CDC Analytics API",
@@ -152,6 +159,14 @@ def order_detail(order_id: int):
     if not rows:
         raise HTTPException(status_code=404, detail=f"No order {order_id}")
     return rows[0]
+
+
+# Mounted last, deliberately -- after every API route above, so /app never
+# shadows an API path. html=True serves cdc/frontend/index.html for /app/
+# and any sub-path that doesn't match a real file (needed for client-side
+# routing if this ever grows beyond one page).
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 
 if __name__ == "__main__":

@@ -393,6 +393,31 @@ reliably overlap with a single test request), so treat that path as
 reasonable-but-unconfirmed rather than proven, unlike everything else in
 this file.
 
+### Frontend: a small dashboard over the API
+
+`cdc/frontend/` is a plain HTML/CSS/JS page (no build step, no npm) that
+calls the endpoints above directly -- one section per mart: a revenue chart
+(filterable by channel/date range), a customers-by-region bar chart, an
+inventory table (with a needs-reorder filter and highlighted rows), and a
+paginated/filterable orders table. Chart.js is loaded from a CDN; everything
+else is vanilla `fetch()`.
+
+`cdc/api/main.py` mounts it at `/app` on the *same* FastAPI process that
+serves the API -- deliberately same-origin, so the frontend's `fetch()`
+calls need no CORS configuration at all. Once the API is running
+(`.venv/bin/python -m cdc.api.main`), open http://localhost:8000/app/.
+
+**Verified**: every endpoint's actual JSON response checked field-by-field
+against what `app.js` expects (types, date-string format, the specific
+`.slice(0, 10)` truncation it applies, `needs_reorder`'s boolean-ness),
+plus the exact combined-filter query shapes the JS constructs via
+`URLSearchParams` re-run directly against the live API. **Not verified**:
+actual visual rendering (chart layout, CSS, the DOM after JS execution) --
+no browser automation was available in the environment this was built in,
+so this was checked at the data/wiring level only, not by looking at it.
+Worth an eyeball pass before trusting it looks right, not just that it
+returns right.
+
 ## Not done yet
 
 - **`s3-sink` now has an automated correctness check, transitively** --
@@ -413,3 +438,6 @@ this file.
 - Possible future directions: Parquet/Avro output (both sinks currently write
   plain JSONL), or testing what happens to each sink under a Kafka Connect
   worker restart mid-batch.
+- `cdc/frontend/` hasn't been visually verified in a browser -- checked at
+  the data/wiring level (response shapes, filter query construction) but
+  not by actually looking at the rendered page.
