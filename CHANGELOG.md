@@ -4,6 +4,43 @@ One entry per tagged release: roughly what's implemented at that point, and
 (for everything after the first) what's new since the previous tag. Not a
 commit-by-commit log — see `git log` for that.
 
+## `cdc-v3` — 2026-09-13
+
+**Incremental since `cdc-v2`:**
+
+- **`cdc/dbt/`** (new) — a third, independent arm onto the raw CDC storage:
+  plain dbt-duckdb models whose SQL reads `s3-sink`'s JSONL directly off
+  MinIO via DuckDB's `httpfs` extension, no Python CDC-parsing code
+  involved. Staging models (`stg_cdc_*`, one per table) squash the raw
+  change-event log into current state entirely in SQL (dedup by PK ordered
+  by `source_ts_ms`, excluding rows whose latest op is a delete). Marts on
+  top (`fct_cdc_orders`, `mart_revenue_by_channel`,
+  `mart_customers_by_region`, `mart_inventory_current`) compute real
+  metrics, not just a passthrough. Verified live against Postgres, not
+  just "it ran without error": every staging row count matched exactly,
+  and revenue aggregates matched an independently-written Postgres query
+  computed a different way. Deliberately has no incremental logic (every
+  query rescans the whole bucket) — an accepted gap, not an oversight, for
+  the same late-arrival reason `cdc/batch_load.py`'s object-key tracking
+  exists in the first place. Recorded as ADR-7.
+- **ADR-6 corrected** — the original claim that switching `s3-sink` to
+  Parquet was a one-line config change was tested live and found wrong:
+  Parquet requires real schemas on the wire (`schemas.enable=true` on
+  `postgres-source`), which would break `cdc/consumer.py` and
+  `cdc/batch_load.py` and grow every message on every topic, not just the
+  ones headed to `s3-sink`. Confirmed the underlying premise still holds
+  (Parquet's read-side benefits are real) by verifying it end-to-end
+  against an isolated second source connector, then decided against
+  paying that cost for the main pipeline.
+- **`cdc/FILE_FORMATS.md`** gained a "when to actually revisit this"
+  section — concrete trigger conditions (data volume, query patterns,
+  repeated reads, an existing schema registry, a Parquet-native consuming
+  ecosystem) for reopening the JSONL-vs-Parquet decision later, plus the
+  reframe that resolves it for the immediate next step: Parquet's benefits
+  are available at the dbt transformation's *output* layer without any of
+  the blast radius, since a squash query's result isn't schemaless
+  Debezium envelope JSON.
+
 ## `cdc-v2` — 2026-09-13
 
 **Incremental since `cdc-v1`:**
