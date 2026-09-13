@@ -277,10 +277,15 @@ continuously, loading only whatever's landed since it last ran.
 .venv/bin/python -m cdc.batch_load --loop 300
 ```
 
-It tracks which objects it's already loaded in `cdc/batch_load_state.json`
-(one entry per object key -- objects are never rewritten once flushed, so
-this is exact, not a fuzzy date watermark) and writes to its own
-`cdc/batch_materialized.duckdb`, kept separate from `cdc/consumer.py`'s
+It tracks which objects it's already loaded in a table
+(`_cdc_batch_load_state`) inside its own output file, `cdc/batch_materialized.duckdb`
+-- one entry per object key (objects are never rewritten once flushed, so
+this is exact, not a fuzzy date watermark), with a `processed_at` per key so
+there's a real history, not just a current set. Keeping the state in the
+same DuckDB file as the data means each object's writes and its "processed"
+marker commit in one transaction -- a crash mid-object can't leave one
+without the other, it just leaves that object unprocessed, to retry next
+run. `batch_materialized.duckdb` is kept separate from `cdc/consumer.py`'s
 `materialized.duckdb` on purpose: `cdc/verify.py --materialized
 cdc/batch_materialized.duckdb` runs the identical row-parity check against
 the batch path, and both loaders' `_cdc_lag_log` tables share a `loader`

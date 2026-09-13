@@ -1,7 +1,11 @@
 """Batch-loads change events from the s3-sink connector's landed objects in
-MinIO/S3 into a separate DuckDB file, incrementally: each run only reads
-objects it hasn't already processed (tracked in a small state file), rather
-than rescanning and reprocessing everything from scratch every time.
+MinIO/S3 into a DuckDB file, incrementally: each run only reads objects it
+hasn't already processed. Progress is tracked in a table inside that same
+DuckDB file (_cdc_batch_load_state) rather than an external state file --
+one artifact instead of two, and it means each object's data writes and its
+"processed" marker commit together in one transaction: a crash mid-object
+can't leave the data applied but unmarked (or the reverse), it just leaves
+that one object entirely unprocessed, to be picked up again next run.
 
 This is the batch counterpart to cdc/consumer.py's live Kafka consumer --
 same underlying data (both ultimately trace back to the same
@@ -14,12 +18,21 @@ here, 'stream' in consumer.py's) so batch lag -- dominated by the sink's
 flush interval *plus* however long between batch runs -- is directly
 comparable to streaming lag.
 
+Deliberately tracks exact object keys, not a timestamp watermark: a
+timestamp-based "where did I leave off" (the standard dbt incremental-model
+pattern) would silently skip an object that lands *after* the watermark has
+already advanced past its internal timestamp -- exactly what
+generator/eventlog.py's late_insert mutation is designed to produce. Key
+tracking has no such gap: a late-arriving object is still just a new,
+unseen key.
+
 Usage:
     python -m cdc.batch_load                 # process whatever's new, then exit
     python -m cdc.batch_load --loop 300      # repeat every 300s, forever
 """
 
 import argparse
+import datetime
 import json
 import time
 
@@ -31,8 +44,14 @@ from . import schema_map
 
 DEFAULT_ENDPOINT = "http://localhost:9000"
 DEFAULT_BUCKET = "cdc-events"
-DEFAULT_STATE_FILE = "cdc/batch_load_state.json"
 DEFAULT_OUT = "cdc/batch_materialized.duckdb"
+
+DDL_STATE_TABLE = """
+CREATE TABLE IF NOT EXISTS _cdc_batch_load_state (
+    object_key VARCHAR PRIMARY KEY,
+    processed_at TIMESTAMP
+)
+"""
 
 
 def _s3_client(endpoint: str, access_key: str, secret_key: str):
@@ -49,17 +68,20 @@ def _s3_client(endpoint: str, access_key: str, secret_key: str):
     )
 
 
-def load_state(path: str) -> set[str]:
-    try:
-        with open(path) as f:
-            return set(json.load(f).get("processed_keys", []))
-    except FileNotFoundError:
-        return set()
+def ensure_state_table(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(DDL_STATE_TABLE)
 
 
-def save_state(path: str, processed: set[str]) -> None:
-    with open(path, "w") as f:
-        json.dump({"processed_keys": sorted(processed)}, f, indent=2)
+def load_state(con: duckdb.DuckDBPyConnection) -> set[str]:
+    rows = con.execute("SELECT object_key FROM _cdc_batch_load_state").fetchall()
+    return {r[0] for r in rows}
+
+
+def mark_processed(con: duckdb.DuckDBPyConnection, key: str) -> None:
+    con.execute(
+        "INSERT INTO _cdc_batch_load_state VALUES (?, ?)",
+        [key, datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)],
+    )
 
 
 def list_objects(s3, bucket: str) -> list[str]:
@@ -110,7 +132,7 @@ def apply_line(con: duckdb.DuckDBPyConnection, table: str, line: str, counts: di
     counts[f"{table}:{op}"] = counts.get(f"{table}:{op}", 0) + 1
 
 
-def run_once(con: duckdb.DuckDBPyConnection, s3, bucket: str, state_path: str, processed: set[str]) -> tuple[dict, int]:
+def run_once(con: duckdb.DuckDBPyConnection, s3, bucket: str, processed: set[str]) -> tuple[dict, int]:
     all_keys = list_objects(s3, bucket)
     new_keys = sorted(k for k in all_keys if k not in processed)
 
@@ -120,13 +142,19 @@ def run_once(con: duckdb.DuckDBPyConnection, s3, bucket: str, state_path: str, p
         if table is None:
             continue
         body = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8")
-        for line in body.splitlines():
-            apply_line(con, table, line, counts)
-        # persisted after each object, not once at the end of the run --
-        # a crash mid-run then only risks reprocessing the one in-flight
-        # object (harmless: upserts are idempotent), not the whole batch
+
+        # one transaction per object: its data writes and its "processed"
+        # marker commit together, or neither does
+        con.execute("BEGIN TRANSACTION")
+        try:
+            for line in body.splitlines():
+                apply_line(con, table, line, counts)
+            mark_processed(con, key)
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
         processed.add(key)
-        save_state(state_path, processed)
 
     return counts, len(new_keys)
 
@@ -138,17 +166,17 @@ def main():
     parser.add_argument("--access-key", default="minioadmin")
     parser.add_argument("--secret-key", default="minioadmin")
     parser.add_argument("--out", default=DEFAULT_OUT)
-    parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
     parser.add_argument("--loop", type=float, default=None, help="Repeat every N seconds, forever, instead of running once and exiting.")
     args = parser.parse_args()
 
     s3 = _s3_client(args.endpoint, args.access_key, args.secret_key)
     con = duckdb.connect(args.out)
     schema_map.ensure_schema(con)
-    processed = load_state(args.state_file)
+    ensure_state_table(con)
+    processed = load_state(con)
 
     while True:
-        counts, n_new_objects = run_once(con, s3, args.bucket, args.state_file, processed)
+        counts, n_new_objects = run_once(con, s3, args.bucket, processed)
         if n_new_objects:
             print(f"Processed {n_new_objects} new object(s):")
             for k in sorted(counts):

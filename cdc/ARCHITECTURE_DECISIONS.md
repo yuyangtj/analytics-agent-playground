@@ -160,13 +160,23 @@ asserted, not demonstrated.
 
 **Decision**: `cdc/batch_load.py` reads directly from the `s3-sink` bucket
 (not Kafka) and loads into its own DuckDB file, incrementally: it lists the
-bucket's objects, diffs against a small state file (`processed_keys`, one
-entry per already-loaded object key), and only reads/applies whatever's new.
-Re-running it with nothing new is a no-op; running it again after new
-objects land processes only those, not a full rescan. State is persisted
-after each object, not once at the end of a run, so a crash mid-run risks
-reprocessing at most the one in-flight object (harmless — every apply is an
-upsert or a keyed delete, both idempotent) rather than the whole batch.
+bucket's objects, diffs against a `_cdc_batch_load_state` table *inside that
+same DuckDB file* (one row per already-loaded object key, with a
+`processed_at` timestamp — a real history, not just a current set), and
+only reads/applies whatever's new. Re-running it with nothing new is a
+no-op; running it again after new objects land processes only those, not a
+full rescan.
+
+State lives in the same file as the data specifically so each object's
+writes and its "processed" marker commit in one transaction
+(`BEGIN`/`COMMIT` wrapping both) — a crash mid-object can't leave the data
+applied but unmarked, or the reverse; it just leaves that one object
+unprocessed, retried whole next run. An earlier version tracked state in a
+separate local JSON file, updated with a plain file write *after* the
+object's DB writes had already happened — safe (every apply is an upsert or
+a keyed delete, both idempotent, so reprocessing was harmless) but not
+exact, and it meant two artifacts instead of one. Moved into the same
+DuckDB file once that gap was worth closing.
 
 Object keys are the natural unit to track rather than a single date
 watermark: `s3-sink` never rewrites an object once flushed (each flush
@@ -189,9 +199,13 @@ flush interval plus however long between batch runs. That gap *is* the
 batch/streaming tradeoff, made visible with real numbers instead of asserted
 in prose.
 
-Verified live: replayed a slice, deleted one row to exercise the tombstone
-path, ran the loader (all 8 tables matched Postgres exactly, including the
-delete), ran it again with nothing new (correctly a no-op), replayed more,
-and confirmed the second run processed only the newly-landed objects — row
-counts after both runs matched Postgres exactly throughout, not just at the
-end.
+Verified live, in two passes (once for the JSON-file version, again after
+moving state into `_cdc_batch_load_state`): replayed a slice, deleted one
+row to exercise the tombstone path, ran the loader (all 8 tables matched
+Postgres exactly, including the delete), ran it again with nothing new
+(correctly a no-op), replayed more, and confirmed the next run processed
+only the newly-landed objects — row counts matched Postgres exactly
+throughout both passes, not just at the end. `cdc/verify.py --materialized
+cdc/batch_materialized.duckdb` was run against the final state directly as
+part of the second pass, confirming the transactional rework didn't change
+the outcome, only how state is tracked.
