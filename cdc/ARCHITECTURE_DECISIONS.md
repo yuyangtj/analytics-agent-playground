@@ -435,3 +435,42 @@ the fix two ways: the corrected CDN URL returns `200` directly, and
 happened), confirming it catches and returns `null` instead of throwing.
 Visual confirmation of the actual fix still comes from the same source as
 the bug report — the user, in a real browser — not from this environment.
+
+---
+
+## ADR-10: `/meta` reports two different kinds of staleness, computed without the API touching S3
+
+**Status**: Implemented (`cdc/api/main.py`'s `/meta`,
+`cdc/dbt/models/marts/mart_data_freshness.sql`).
+
+**Context**: a dashboard showing metrics needs to say how current they are
+— but "how current" is genuinely two different questions, and conflating
+them would be misleading. "When did `dbt run` last refresh these tables"
+tells you nothing about whether the pipeline upstream is healthy (you could
+refresh stale-forever data all day and this number would look fine). "How
+far behind is the underlying data" tells you nothing about whether anyone's
+actually re-run `dbt` recently (the pipeline could be perfectly real-time
+and the dashboard still show yesterday's numbers because nobody refreshed
+the marts).
+
+**Decision**: report both, separately. `marts_refreshed_at`/
+`_ago_seconds` — `cdc_raw.duckdb`'s own file mtime, zero extra
+infrastructure, computed in the API process directly (`os.path.getmtime`).
+`data_as_of`/`data_lag_seconds` — the latest `updated_at` across all 8
+source tables, via a new mart (`mart_data_freshness`) rather than a live
+query: consistent with ADR-8's whole premise (the API never touches
+MinIO/S3 itself), this aggregation runs against the staging views as part
+of `dbt run`'s existing bucket-reading batch step, and the API just reads
+the one-row-per-table result table like any other mart. `data_lag_seconds`
+ends up folding the *entire* pipeline into one number — Postgres commit →
+Debezium → Kafka → `s3-sink`'s flush interval → time since the last
+`dbt run` — not because that's especially clever, but because that's
+genuinely what "how stale is this row's business timestamp relative to
+right now" already integrates over, for free.
+
+**Verified live**: `data_as_of` matched `greatest(max(updated_at))` across
+all 8 Postgres tables, computed independently, exactly to the microsecond;
+`marts_refreshed_at` matched the DuckDB file's actual mtime on disk
+(cross-checked against `stat`, accounting for the display timezone
+difference — UTC in the API response vs. local time from `stat`, same
+instant).

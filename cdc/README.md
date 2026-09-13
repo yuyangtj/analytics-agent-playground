@@ -387,9 +387,25 @@ bucket rescan (which is exactly why marts were switched to `+materialized:
 table` above -- an API serving a frontend can't have every request trigger
 a full S3 read through several joined views).
 
-Endpoints: `/health` (mart tables present + queryable), `/metrics/revenue-by-channel`,
+Endpoints: `/health` (mart tables present + queryable), `/meta` (data
+freshness -- see below), `/metrics/revenue-by-channel`,
 `/metrics/customers-by-region`, `/metrics/inventory`, `/orders` (paginated,
 filterable by `status`/`channel`), `/orders/{order_id}`.
+
+**`/meta` answers two different questions that are easy to conflate**:
+"when were the numbers you're looking at last computed" and "how far
+behind is the underlying data." `marts_refreshed_at`/`_ago_seconds` is
+`cdc_raw.duckdb`'s own file mtime -- when `dbt run` last wrote it, however
+stale that might be if nobody's re-run it. `data_as_of`/`data_lag_seconds`
+is the latest `updated_at` seen across all 8 source tables, via a new mart
+(`mart_data_freshness`, computed against the staging views at `dbt run`
+time, not queried live -- `/meta` never touches MinIO/S3, same as every
+other endpoint). That second number folds the *entire* pipeline's lag into
+one figure: Postgres commit time -> Debezium -> Kafka -> `s3-sink`'s flush
+interval -> however long since the last `dbt run` -- not just one hop of
+it. Verified live: `data_as_of` matched an independently-written Postgres
+query (`greatest(max(updated_at))` across all 8 tables) exactly, and
+`marts_refreshed_at` matched the DuckDB file's actual mtime on disk.
 
 Verified live: every endpoint's output checked against an
 independently-written Postgres aggregate, not just against the dbt marts

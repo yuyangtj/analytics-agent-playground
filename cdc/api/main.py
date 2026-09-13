@@ -30,6 +30,7 @@ read-only connection rather than holding one open for the app's lifetime,
 which minimizes (but doesn't eliminate) that window.
 """
 
+import datetime as dt
 import os
 from typing import Optional
 
@@ -83,6 +84,51 @@ def health():
         return {"status": "ok", "mart_tables": [r["table_name"] for r in rows]}
     except HTTPException as e:
         return {"status": "error", "detail": e.detail}
+
+
+@app.get("/meta")
+def meta():
+    """When the marts were last refreshed, and how far behind the
+    underlying *business data* is relative to now -- two different things,
+    easy to conflate:
+
+    - `marts_refreshed_at`/`_ago_seconds`: when `dbt run` last wrote
+      cdc_raw.duckdb (this file's own mtime -- if dbt hasn't run in an
+      hour, these numbers are an hour stale even if the pipeline upstream
+      is perfectly healthy).
+    - `data_as_of`/`data_lag_seconds`: the latest `updated_at` seen across
+      all 8 tables in `mart_data_freshness` (itself computed against the
+      staging views at `dbt run` time, not queried live here -- this
+      endpoint never touches MinIO/S3, same as every other one). This is
+      end-to-end lag: Postgres commit -> Debezium -> Kafka -> s3-sink's
+      flush interval -> whenever `dbt run` last happened to run, all
+      folded into one number.
+    """
+    result: dict = {}
+
+    if os.path.exists(DB_PATH):
+        refreshed_at = dt.datetime.utcfromtimestamp(os.path.getmtime(DB_PATH))
+        result["marts_refreshed_at"] = refreshed_at.isoformat() + "Z"
+        result["marts_refreshed_ago_seconds"] = (dt.datetime.utcnow() - refreshed_at).total_seconds()
+    else:
+        result["marts_refreshed_at"] = None
+        result["marts_refreshed_ago_seconds"] = None
+
+    freshness_rows = _query("select * from main_marts.mart_data_freshness order by table_name")
+    now = dt.datetime.utcnow()
+    max_updated_at = None
+    tables = []
+    for r in freshness_rows:
+        updated = r.get("max_updated_at")
+        lag = (now - updated).total_seconds() if updated is not None else None
+        tables.append({**r, "lag_seconds": lag})
+        if updated is not None and (max_updated_at is None or updated > max_updated_at):
+            max_updated_at = updated
+
+    result["tables"] = tables
+    result["data_as_of"] = (max_updated_at.isoformat() + "Z") if max_updated_at else None
+    result["data_lag_seconds"] = (now - max_updated_at).total_seconds() if max_updated_at else None
+    return result
 
 
 @app.get("/metrics/revenue-by-channel")
