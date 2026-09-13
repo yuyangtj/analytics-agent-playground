@@ -431,7 +431,10 @@ calls the endpoints above directly -- one section per mart: a revenue chart
 (filterable by channel/date range), a customers-by-region bar chart, an
 inventory table (with a needs-reorder filter and highlighted rows), and a
 paginated/filterable orders table. Chart.js is loaded from a CDN; everything
-else is vanilla `fetch()`.
+else is vanilla `fetch()`. A line under the health check shows `/meta`'s two
+freshness numbers ("marts refreshed Xs ago · data as of Ym ago"), styled red
+past a 10-minute lag (`STALE_THRESHOLD_SECONDS` in `app.js` -- a UI cue
+only, not a statement about acceptable pipeline lag).
 
 `cdc/api/main.py` mounts it at `/app` on the *same* FastAPI process that
 serves the API -- deliberately same-origin, so the frontend's `fetch()`

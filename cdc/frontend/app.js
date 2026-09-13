@@ -8,6 +8,22 @@ const CHART_COLORS = [
   "#3b5bdb", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#1098ad", "#e03131",
 ];
 
+// Purely a UI threshold for the "stale" warning color below -- not a
+// statement about what counts as acceptable lag for the pipeline itself
+// (that varies a lot depending on cdc/replay.py's --speed and how long ago
+// `dbt run` last happened). Easy to adjust if it's noisy in practice.
+const STALE_THRESHOLD_SECONDS = 10 * 60;
+
+function formatDuration(totalSeconds) {
+  if (totalSeconds == null) return "unknown";
+  const s = Math.max(0, Math.round(totalSeconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 async function api(path) {
   const res = await fetch(path);
   if (!res.ok) {
@@ -89,6 +105,22 @@ async function checkHealth() {
   } catch (e) {
     line.textContent = `API unreachable: ${e.message}`;
     line.className = "health error";
+  }
+}
+
+// ---- freshness ----
+async function loadFreshness() {
+  const line = document.getElementById("freshness-line");
+  try {
+    const data = await api("/meta");
+    const refreshedAgo = formatDuration(data.marts_refreshed_ago_seconds);
+    const dataAgo = formatDuration(data.data_lag_seconds);
+    line.textContent = `Marts refreshed ${refreshedAgo} ago · data as of ${dataAgo} ago`;
+    const stale = (data.data_lag_seconds ?? Infinity) > STALE_THRESHOLD_SECONDS;
+    line.className = stale ? "freshness stale" : "freshness";
+  } catch (e) {
+    line.textContent = `Freshness unavailable: ${e.message}`;
+    line.className = "freshness stale";
   }
 }
 
@@ -253,7 +285,13 @@ document.getElementById("orders-next").addEventListener("click", () => {
 
 async function init() {
   await checkHealth();
-  const results = await Promise.allSettled([loadRevenue(), loadCustomers(), loadInventory(), loadOrders()]);
+  const results = await Promise.allSettled([
+    loadFreshness(),
+    loadRevenue(),
+    loadCustomers(),
+    loadInventory(),
+    loadOrders(),
+  ]);
   results.forEach((r) => {
     if (r.status === "rejected") console.error(r.reason);
   });
