@@ -4,17 +4,23 @@ the raw storage later, on their own schedule" idea from ARCHITECTURE_DECISIONS.m
 ADR-1, taken one step further: not just reading the data, but serving it.
 
 Reads cdc/dbt/cdc_raw.duckdb directly, read-only. Doesn't touch Kafka,
-Postgres, or MinIO/S3 itself -- `dbt run` (a separate, periodic batch step)
+Postgres, or MinIO/S3 itself -- `./cdc/dbt/run.sh` (a separate, periodic
+batch step; see that file for why it's a wrapper and not a bare `dbt run`)
 is what refreshes the mart *tables* this API queries; the API's own job is
 just fast, read-only serving of whatever's already there. Marts are
 materialized as `table`, not `view` (see cdc/dbt/dbt_project.yml), so a
 request here is a plain DuckDB table read, not a full bucket rescan.
 
+Also serves the static frontend (cdc/frontend/) at /app -- same origin as
+the API, deliberately, so the frontend's fetch() calls need no CORS
+configuration at all: one process, one URL, no cross-origin surface.
+
 Run it:
     .venv/bin/python -m cdc.api.main
     # or: .venv/bin/uvicorn cdc.api.main:app --reload
 
-Then see the auto-generated docs at http://localhost:8000/docs.
+Then see the dashboard at http://localhost:8000/app/, or the
+auto-generated API docs at http://localhost:8000/docs.
 
 DuckDB file-locking note (same caveat as dbt/README.md's for the benchmark
 arm): don't run `dbt run` against cdc/dbt/cdc_raw.duckdb at the same moment
@@ -24,13 +30,16 @@ read-only connection rather than holding one open for the app's lifetime,
 which minimizes (but doesn't eliminate) that window.
 """
 
+import datetime as dt
 import os
 from typing import Optional
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 
 DB_PATH = os.environ.get("CDC_ANALYTICS_DB", os.path.join(os.path.dirname(__file__), "..", "dbt", "cdc_raw.duckdb"))
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
 app = FastAPI(
     title="CDC Analytics API",
@@ -46,7 +55,7 @@ def _query(sql: str, params: Optional[list] = None) -> list[dict]:
     if not os.path.exists(DB_PATH):
         raise HTTPException(
             status_code=503,
-            detail=f"{DB_PATH} doesn't exist yet -- run `dbt run` in cdc/dbt/ first.",
+            detail=f"{DB_PATH} doesn't exist yet -- run `./cdc/dbt/run.sh` first.",
         )
     try:
         con = duckdb.connect(DB_PATH, read_only=True)
@@ -58,7 +67,7 @@ def _query(sql: str, params: Optional[list] = None) -> list[dict]:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
     except duckdb.CatalogException as e:
-        raise HTTPException(status_code=503, detail=f"Mart table not found -- run `dbt run` in cdc/dbt/ first: {e}")
+        raise HTTPException(status_code=503, detail=f"Mart table not found -- run `./cdc/dbt/run.sh` first: {e}")
     finally:
         con.close()
 
@@ -69,12 +78,57 @@ def health():
     not whether the CDC pipeline itself is up (this API never touches
     Kafka/Postgres/MinIO directly)."""
     if not os.path.exists(DB_PATH):
-        return {"status": "not_ready", "detail": "cdc_raw.duckdb doesn't exist yet -- run `dbt run` in cdc/dbt/."}
+        return {"status": "not_ready", "detail": "cdc_raw.duckdb doesn't exist yet -- run `./cdc/dbt/run.sh`."}
     try:
         rows = _query("select table_name from information_schema.tables where table_schema = 'main_marts' order by 1")
         return {"status": "ok", "mart_tables": [r["table_name"] for r in rows]}
     except HTTPException as e:
         return {"status": "error", "detail": e.detail}
+
+
+@app.get("/meta")
+def meta():
+    """When the marts were last refreshed, and how far behind the
+    underlying *business data* is relative to now -- two different things,
+    easy to conflate:
+
+    - `marts_refreshed_at`/`_ago_seconds`: when `dbt run` last wrote
+      cdc_raw.duckdb (this file's own mtime -- if dbt hasn't run in an
+      hour, these numbers are an hour stale even if the pipeline upstream
+      is perfectly healthy).
+    - `data_as_of`/`data_lag_seconds`: the latest `updated_at` seen across
+      all 8 tables in `mart_data_freshness` (itself computed against the
+      staging views at `dbt run` time, not queried live here -- this
+      endpoint never touches MinIO/S3, same as every other one). This is
+      end-to-end lag: Postgres commit -> Debezium -> Kafka -> s3-sink's
+      flush interval -> whenever `dbt run` last happened to run, all
+      folded into one number.
+    """
+    result: dict = {}
+
+    if os.path.exists(DB_PATH):
+        refreshed_at = dt.datetime.utcfromtimestamp(os.path.getmtime(DB_PATH))
+        result["marts_refreshed_at"] = refreshed_at.isoformat() + "Z"
+        result["marts_refreshed_ago_seconds"] = (dt.datetime.utcnow() - refreshed_at).total_seconds()
+    else:
+        result["marts_refreshed_at"] = None
+        result["marts_refreshed_ago_seconds"] = None
+
+    freshness_rows = _query("select * from main_marts.mart_data_freshness order by table_name")
+    now = dt.datetime.utcnow()
+    max_updated_at = None
+    tables = []
+    for r in freshness_rows:
+        updated = r.get("max_updated_at")
+        lag = (now - updated).total_seconds() if updated is not None else None
+        tables.append({**r, "lag_seconds": lag})
+        if updated is not None and (max_updated_at is None or updated > max_updated_at):
+            max_updated_at = updated
+
+    result["tables"] = tables
+    result["data_as_of"] = (max_updated_at.isoformat() + "Z") if max_updated_at else None
+    result["data_lag_seconds"] = (now - max_updated_at).total_seconds() if max_updated_at else None
+    return result
 
 
 @app.get("/metrics/revenue-by-channel")
@@ -152,6 +206,14 @@ def order_detail(order_id: int):
     if not rows:
         raise HTTPException(status_code=404, detail=f"No order {order_id}")
     return rows[0]
+
+
+# Mounted last, deliberately -- after every API route above, so /app never
+# shadows an API path. html=True serves cdc/frontend/index.html for /app/
+# and any sub-path that doesn't match a real file (needed for client-side
+# routing if this ever grows beyond one page).
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 
 if __name__ == "__main__":

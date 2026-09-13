@@ -365,3 +365,112 @@ the conflict — `dbt run`'s 12 tiny models finish in well under half a
 second, apparently too fast to reliably overlap with a single test
 request. Recorded honestly as unconfirmed, not silently assumed to work
 because the code looks reasonable.
+
+**A real footgun found and fixed after this ADR first shipped**:
+`dbt-duckdb`'s `path: cdc_raw.duckdb` in `profiles.yml` resolves relative
+to the *current working directory `dbt` is invoked from*, not
+`--project-dir`. Running `dbt run --project-dir cdc/dbt --profiles-dir
+cdc/dbt` from the repo root (a natural thing to try, since it's a common
+enough dbt invocation style) silently created `cdc_raw.duckdb` at the repo
+root instead — dbt reported success, no error, and the API then reported
+`doesn't exist yet` for a `dbt run` that had just "succeeded," which is
+exactly what happened. `cdc/dbt/run.sh` (new) fixes this properly rather
+than just documenting around it: it `cd`s into `cdc/dbt` internally before
+invoking `dbt`, so it can be called from anywhere (`./cdc/dbt/run.sh` from
+the repo root) and the relative path always resolves the same way
+regardless of the caller's own working directory. All docs and the API's
+own error messages now point at `run.sh`, not a bare `dbt run`.
+
+---
+
+## ADR-9: the frontend is plain HTML/JS mounted same-origin on the API, not a separate app
+
+**Status**: Implemented (`cdc/frontend/`, mounted via `StaticFiles` in
+`cdc/api/main.py`).
+
+**Context**: a frontend calling `cdc/api/`'s endpoints needs to be served
+from *somewhere*. The two real options were a separate dev server (Vite,
+plain `python -m http.server`, ...) with CORS configured on the API, or
+serving the static files directly off the same FastAPI process the API
+already runs.
+
+**Decision**: same process, same origin. `cdc/api/main.py` mounts
+`cdc/frontend/` at `/app` via Starlette's `StaticFiles`, registered *after*
+every API route so it can't shadow one. This sidesteps CORS entirely —
+`fetch('/metrics/...')` from a page served at `/app/` resolves against the
+origin root regardless of the page's own path, no `Access-Control-*`
+headers needed anywhere. Plain HTML/CSS/JS, no build step, no npm — matches
+this repo's existing bias (nothing else here has a JS toolchain), and
+Chart.js is loaded from a CDN rather than bundled.
+
+**Verified**: every endpoint's actual JSON response checked field-by-field
+against what `app.js` expects (types, the ISO-datetime format it truncates
+with `.slice(0, 10)`, `needs_reorder`'s boolean-ness), and the exact
+combined-filter query shapes the JS builds via `URLSearchParams`, re-run
+directly against the live API outside the browser.
+
+**Was not verified at merge time — recorded honestly rather than glossed
+over — and that gap immediately caught a real bug**: no browser automation
+tool was available in the environment this was built in
+(`mcp__claude-in-chrome` reported no extension connected), so the page's
+actual rendering was never observed directly before merging. The user
+opened it in a real browser shortly after and sent a screenshot: both
+charts were blank, and — more tellingly — the data table that should render
+directly below the revenue chart was missing too, even though table
+rendering doesn't depend on Chart.js at all. That combination pointed at
+the chart call throwing and aborting the rest of the function before the
+table-render call ever ran, not a data problem (the health line and filter
+dropdowns in the screenshot were populated correctly).
+
+Root cause, found by checking the CDN URL directly rather than guessing:
+`Chart.js/4.4.4/chart.umd.min.js` 404'd — that exact version was never
+published to cdnjs (confirmed via cdnjs's own API, which reports `4.5.1` as
+current). Fixed the version pin, and separately hardened `app.js` itself:
+added a `safeChart()` wrapper (`try`/`catch` around `new Chart(...)`) so a
+chart failure — this exact CDN issue, an ad-blocker, any future hiccup —
+can never again take the table in the same section down with it. Verified
+the fix two ways: the corrected CDN URL returns `200` directly, and
+`safeChart`'s catch behavior was unit-tested in isolation under Node with
+`Chart` deliberately left undefined (simulating the exact failure that
+happened), confirming it catches and returns `null` instead of throwing.
+Visual confirmation of the actual fix still comes from the same source as
+the bug report — the user, in a real browser — not from this environment.
+
+---
+
+## ADR-10: `/meta` reports two different kinds of staleness, computed without the API touching S3
+
+**Status**: Implemented (`cdc/api/main.py`'s `/meta`,
+`cdc/dbt/models/marts/mart_data_freshness.sql`).
+
+**Context**: a dashboard showing metrics needs to say how current they are
+— but "how current" is genuinely two different questions, and conflating
+them would be misleading. "When did `dbt run` last refresh these tables"
+tells you nothing about whether the pipeline upstream is healthy (you could
+refresh stale-forever data all day and this number would look fine). "How
+far behind is the underlying data" tells you nothing about whether anyone's
+actually re-run `dbt` recently (the pipeline could be perfectly real-time
+and the dashboard still show yesterday's numbers because nobody refreshed
+the marts).
+
+**Decision**: report both, separately. `marts_refreshed_at`/
+`_ago_seconds` — `cdc_raw.duckdb`'s own file mtime, zero extra
+infrastructure, computed in the API process directly (`os.path.getmtime`).
+`data_as_of`/`data_lag_seconds` — the latest `updated_at` across all 8
+source tables, via a new mart (`mart_data_freshness`) rather than a live
+query: consistent with ADR-8's whole premise (the API never touches
+MinIO/S3 itself), this aggregation runs against the staging views as part
+of `dbt run`'s existing bucket-reading batch step, and the API just reads
+the one-row-per-table result table like any other mart. `data_lag_seconds`
+ends up folding the *entire* pipeline into one number — Postgres commit →
+Debezium → Kafka → `s3-sink`'s flush interval → time since the last
+`dbt run` — not because that's especially clever, but because that's
+genuinely what "how stale is this row's business timestamp relative to
+right now" already integrates over, for free.
+
+**Verified live**: `data_as_of` matched `greatest(max(updated_at))` across
+all 8 Postgres tables, computed independently, exactly to the microsecond;
+`marts_refreshed_at` matched the DuckDB file's actual mtime on disk
+(cross-checked against `stat`, accounting for the display timezone
+difference — UTC in the API response vs. local time from `stat`, same
+instant).

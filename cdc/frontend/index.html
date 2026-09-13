@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CDC Analytics Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>CDC Analytics Dashboard</h1>
+    <p class="subtitle">
+      Served by <code>cdc/api/</code> off <code>cdc/dbt/</code>'s marts &mdash;
+      run <code>./cdc/dbt/run.sh</code> to refresh the numbers below.
+    </p>
+    <p id="health-line" class="health">Checking API&hellip;</p>
+    <p id="freshness-line" class="freshness"></p>
+  </header>
+
+  <main>
+    <section id="revenue" class="card">
+      <h2>Revenue by channel</h2>
+      <div class="controls">
+        <label>Channel
+          <select id="revenue-channel"><option value="">All</option></select>
+        </label>
+        <label>From <input type="date" id="revenue-start" /></label>
+        <label>To <input type="date" id="revenue-end" /></label>
+        <button id="revenue-apply">Apply</button>
+      </div>
+      <div class="chart-wrap"><canvas id="revenue-chart"></canvas></div>
+      <div class="table-wrap" id="revenue-table"></div>
+    </section>
+
+    <section id="customers" class="card">
+      <h2>Customers by region</h2>
+      <div class="chart-wrap"><canvas id="customers-chart"></canvas></div>
+    </section>
+
+    <section id="inventory" class="card">
+      <h2>Inventory</h2>
+      <div class="controls">
+        <label>Warehouse
+          <select id="inventory-warehouse"><option value="">All</option></select>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="inventory-reorder-only" />
+          Needs reorder only
+        </label>
+      </div>
+      <div class="table-wrap" id="inventory-table"></div>
+    </section>
+
+    <section id="orders" class="card">
+      <h2>Orders</h2>
+      <div class="controls">
+        <label>Status
+          <select id="orders-status">
+            <option value="">All</option>
+            <option value="completed">completed</option>
+            <option value="cancelled">cancelled</option>
+            <option value="refunded">refunded</option>
+          </select>
+        </label>
+        <label>Channel
+          <select id="orders-channel"><option value="">All</option></select>
+        </label>
+      </div>
+      <div class="table-wrap" id="orders-table"></div>
+      <div class="pager">
+        <button id="orders-prev">&larr; Prev</button>
+        <span id="orders-page-label"></span>
+        <button id="orders-next">Next &rarr;</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -310,9 +310,24 @@ dbt-duckdb models whose SQL reads the JSONL straight off `s3-sink`'s bucket
 via DuckDB's `httpfs` extension, no Python CDC-parsing code at all.
 
 ```bash
-cd cdc/dbt
-../../.venv/bin/dbt run --profiles-dir .
+./cdc/dbt/run.sh          # from anywhere -- e.g. the repo root
+# equivalent to, if you'd rather cd in yourself:
+#   cd cdc/dbt && ../../.venv/bin/dbt run --profiles-dir .
 ```
+
+**Use `run.sh`, or `cd` into `cdc/dbt` yourself first -- don't pass
+`--project-dir cdc/dbt --profiles-dir cdc/dbt` from elsewhere.**
+`profiles.yml`'s `path: cdc_raw.duckdb` is relative to your *current
+working directory when you run `dbt`*, not to `--project-dir`. Running from
+the repo root with those flags instead of `cd`-ing in silently creates
+`cdc_raw.duckdb` at the repo root -- no error, dbt reports success, and
+`cdc/api/` (which looks in `cdc/dbt/`) then reports `cdc_raw.duckdb doesn't
+exist yet` even though `dbt run` just "succeeded." `run.sh` exists
+specifically so this can't happen: it `cd`s into `cdc/dbt` internally
+before invoking `dbt`, regardless of where it's called from, and passes any
+args straight through (`./cdc/dbt/run.sh build`, etc.). If you've already
+hit the stray-file version of this: delete `cdc_raw.duckdb` at the repo
+root and re-run via `run.sh`.
 
 **Staging** (`models/staging/stg_cdc_*.sql`, one per table): squashes the
 raw change-event log into current state, entirely in SQL --
@@ -361,8 +376,8 @@ directly (`s3_endpoint`, `s3_url_style: path`, ...) -- separate from
 querying DuckDB directly.
 
 ```bash
-cd cdc/dbt && ../../.venv/bin/dbt run --profiles-dir .   # refresh the marts first
-cd ../.. && .venv/bin/python -m cdc.api.main             # serves on :8000, docs at /docs
+./cdc/dbt/run.sh                          # refresh the marts first
+.venv/bin/python -m cdc.api.main          # serves on :8000, docs at /docs
 ```
 
 It never touches Kafka, Postgres, or MinIO/S3 itself -- only
@@ -372,9 +387,25 @@ bucket rescan (which is exactly why marts were switched to `+materialized:
 table` above -- an API serving a frontend can't have every request trigger
 a full S3 read through several joined views).
 
-Endpoints: `/health` (mart tables present + queryable), `/metrics/revenue-by-channel`,
+Endpoints: `/health` (mart tables present + queryable), `/meta` (data
+freshness -- see below), `/metrics/revenue-by-channel`,
 `/metrics/customers-by-region`, `/metrics/inventory`, `/orders` (paginated,
 filterable by `status`/`channel`), `/orders/{order_id}`.
+
+**`/meta` answers two different questions that are easy to conflate**:
+"when were the numbers you're looking at last computed" and "how far
+behind is the underlying data." `marts_refreshed_at`/`_ago_seconds` is
+`cdc_raw.duckdb`'s own file mtime -- when `dbt run` last wrote it, however
+stale that might be if nobody's re-run it. `data_as_of`/`data_lag_seconds`
+is the latest `updated_at` seen across all 8 source tables, via a new mart
+(`mart_data_freshness`, computed against the staging views at `dbt run`
+time, not queried live -- `/meta` never touches MinIO/S3, same as every
+other endpoint). That second number folds the *entire* pipeline's lag into
+one figure: Postgres commit time -> Debezium -> Kafka -> `s3-sink`'s flush
+interval -> however long since the last `dbt run` -- not just one hop of
+it. Verified live: `data_as_of` matched an independently-written Postgres
+query (`greatest(max(updated_at))` across all 8 tables) exactly, and
+`marts_refreshed_at` matched the DuckDB file's actual mtime on disk.
 
 Verified live: every endpoint's output checked against an
 independently-written Postgres aggregate, not just against the dbt marts
@@ -392,6 +423,42 @@ live**: a real concurrent-write test didn't reproduce the conflict (dbt's
 reliably overlap with a single test request), so treat that path as
 reasonable-but-unconfirmed rather than proven, unlike everything else in
 this file.
+
+### Frontend: a small dashboard over the API
+
+`cdc/frontend/` is a plain HTML/CSS/JS page (no build step, no npm) that
+calls the endpoints above directly -- one section per mart: a revenue chart
+(filterable by channel/date range), a customers-by-region bar chart, an
+inventory table (with a needs-reorder filter and highlighted rows), and a
+paginated/filterable orders table. Chart.js is loaded from a CDN; everything
+else is vanilla `fetch()`. A line under the health check shows `/meta`'s two
+freshness numbers ("marts refreshed Xs ago · data as of Ym ago"), styled red
+past a 10-minute lag (`STALE_THRESHOLD_SECONDS` in `app.js` -- a UI cue
+only, not a statement about acceptable pipeline lag).
+
+`cdc/api/main.py` mounts it at `/app` on the *same* FastAPI process that
+serves the API -- deliberately same-origin, so the frontend's `fetch()`
+calls need no CORS configuration at all. Once the API is running
+(`.venv/bin/python -m cdc.api.main`), open http://localhost:8000/app/.
+
+**Verified**: every endpoint's actual JSON response checked field-by-field
+against what `app.js` expects (types, date-string format, the specific
+`.slice(0, 10)` truncation it applies, `needs_reorder`'s boolean-ness),
+plus the exact combined-filter query shapes the JS constructs via
+`URLSearchParams` re-run directly against the live API.
+
+**Visual rendering was not checked before the first version merged** (no
+browser automation was available in the environment it was built in) --
+and that gap caught a real bug once someone actually opened it: both charts
+came back blank because the pinned `Chart.js/4.4.4` doesn't exist on cdnjs
+(404 -- confirmed against cdnjs's own API, current is `4.5.1`), and the
+missing library also silently killed the *table* in the same section,
+since the unguarded `new Chart(...)` call threw and aborted the rest of the
+function before the table-render call after it could run. Fixed the
+version pin and added a `safeChart()` wrapper so a chart failure can never
+again take its section's table down with it -- see `ARCHITECTURE_DECISIONS.md`
+ADR-9 for the full story. Still worth an eyeball pass in a real browser
+after any change here; this environment still can't visually confirm it.
 
 ## Not done yet
 
@@ -413,3 +480,6 @@ this file.
 - Possible future directions: Parquet/Avro output (both sinks currently write
   plain JSONL), or testing what happens to each sink under a Kafka Connect
   worker restart mid-batch.
+- `cdc/frontend/` hasn't been visually verified in a browser -- checked at
+  the data/wiring level (response shapes, filter query construction) but
+  not by actually looking at the rendered page.
