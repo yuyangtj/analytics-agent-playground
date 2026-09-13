@@ -4,6 +4,31 @@ One entry per tagged release: roughly what's implemented at that point, and
 (for everything after the first) what's new since the previous tag. Not a
 commit-by-commit log — see `git log` for that.
 
+## `cdc-v4` — 2026-09-13
+
+**Incremental since `cdc-v3`:**
+
+- **`cdc/api/`** (new) — a FastAPI analytics API serving `cdc/dbt/`'s
+  marts, meant to sit behind a frontend dashboard: `/health`,
+  `/metrics/revenue-by-channel`, `/metrics/customers-by-region`,
+  `/metrics/inventory`, `/orders` (paginated, filterable by
+  `status`/`channel`), `/orders/{order_id}`. Reads `cdc/dbt/cdc_raw.duckdb`
+  read-only; never touches Kafka, Postgres, or MinIO itself.
+- **`cdc/dbt/`'s marts now materialize as `table`s, not `view`s** (staging
+  stays views) — otherwise every API request would trigger a full MinIO
+  bucket rescan through several joined views. `dbt run` is now the
+  batch-refresh step; the API just reads whatever tables already exist.
+  Recorded as ADR-8, which also updates ADR-7's now-stale "querying a mart
+  is the read" line.
+- Verified live: every endpoint checked against an independently-written
+  Postgres aggregate, not just against the marts themselves. One thing
+  attempted and honestly recorded as **not** verified: a live concurrent
+  `dbt run`-vs-API-request race, meant to prove the `503` error-handling
+  path for DuckDB's single-writer lock — `dbt run`'s models finish too
+  fast to reliably overlap with a single test request, so the conflict
+  wasn't actually reproduced. The defensive code stays in; it's marked
+  unconfirmed rather than claimed proven.
+
 ## `cdc-v3` — 2026-09-13
 
 **Incremental since `cdc-v2`:**
