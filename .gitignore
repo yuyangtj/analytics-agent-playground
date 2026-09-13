@@ -13,3 +13,8 @@ dbt/target/
 dbt/logs/
 dbt/dbt_packages/
 dbt/.user.yml
+cdc/dbt/target/
+cdc/dbt/logs/
+cdc/dbt/dbt_packages/
+cdc/dbt/.user.yml
+cdc/dbt/cdc_raw.duckdb

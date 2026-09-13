@@ -26,10 +26,12 @@ flowchart LR
     CONSUMER --> DUCK[("DuckDB<br/>materialized.duckdb")]
 
     MINIO -->|"cdc/batch_load.py<br/>(incremental, on demand)"| BATCHDUCK[("DuckDB<br/>batch_materialized.duckdb")]
+    MINIO -->|"cdc/dbt/<br/>(SQL, full rescan per query)"| DBT["dbt marts<br/>(fct_cdc_orders, ...)"]
 
     DUCK -.->|"row-parity + lag diff"| VERIFY["cdc/verify.py"]
     BATCHDUCK -.-> VERIFY
     PG -.-> VERIFY
+    PG -.->|"correctness check, ad hoc"| DBT
 ```
 
 Three sinks read off the same Kafka topics independently: `cdc/consumer.py`
@@ -37,11 +39,12 @@ materializes current state into DuckDB (for `cdc/verify.py`'s correctness/lag
 checks), `file-sink` dumps plain local JSONL, and `s3-sink` writes partitioned
 JSONL objects to a local MinIO bucket. None of them talk to each other or to
 Postgres directly — Kafka is the only thing all three read from.
-`cdc/batch_load.py` is a fourth, independent path onto the *same* underlying
-data: instead of reading Kafka, it reads `s3-sink`'s bucket back
-incrementally, on its own schedule, into its own DuckDB file -- see
-`ARCHITECTURE_DECISIONS.md` (ADR-5) for how that compares to the streaming
-consumer.
+`cdc/batch_load.py` and `cdc/dbt/` are two more independent paths onto that
+*same* underlying MinIO data: the former a Python loader with incremental,
+transactional state tracking; the latter plain dbt-duckdb SQL reading the
+bucket directly via `httpfs`, with no incremental logic at all (every query
+rescans everything under `dt=*`) -- see `ARCHITECTURE_DECISIONS.md` (ADR-5,
+ADR-7) for how each compares to `cdc/consumer.py`'s live streaming path.
 
 See `ARCHITECTURE_DECISIONS.md` for *why* this is shaped the way it is —
 notably why three independent sinks read the same Kafka topics instead of
@@ -299,6 +302,57 @@ column (`'stream'`/`'batch'`) so their lag is directly comparable -- see
 showed (batch lag dominated by `s3-sink`'s flush interval, an order of
 magnitude higher than streaming lag).
 
+## Transforming the raw storage: dbt reading directly off MinIO
+
+`cdc/dbt/` is a third, independent arm onto the same raw storage
+`cdc/batch_load.py` reads -- except instead of a Python loader, it's plain
+dbt-duckdb models whose SQL reads the JSONL straight off `s3-sink`'s bucket
+via DuckDB's `httpfs` extension, no Python CDC-parsing code at all.
+
+```bash
+cd cdc/dbt
+../../.venv/bin/dbt run --profiles-dir .
+```
+
+**Staging** (`models/staging/stg_cdc_*.sql`, one per table): squashes the
+raw change-event log into current state, entirely in SQL --
+`row_number() over (partition by pk order by source_ts_ms desc) = 1`,
+filtering out rows whose latest `op` is `'d'`. Extracts fields via explicit
+JSON-path operators (`value -> 'after' ->> 'col'`), not DuckDB's struct
+auto-inference (`read_json_auto`) -- confirmed live that auto-inference
+types `before`/`after` differently depending on what data happens to be
+present in a given read (a table with zero deletes in the sample gets
+`before` typed as generic `JSON`, not `STRUCT`), which would silently need
+different SQL per table. Explicit paths work the same way regardless.
+
+**Marts** (`models/marts/*.sql`): actual metrics on top of the squashed
+staging layer -- `fct_cdc_orders` (order-level revenue, LEFT JOINed so a
+dangling `product_id`/missing items shows up as NULL/zero rather than
+disappearing, same principle as `dbt/models/marts/fct_orders.sql` in the
+benchmark arm), `mart_revenue_by_channel`, `mart_customers_by_region`,
+`mart_inventory_current` (with a derived `needs_reorder` flag).
+
+Verified live, not just "it ran without error": every staging table's row
+count matched Postgres exactly; `mart_revenue_by_channel`'s total
+(`$9925.46` across 143 completed orders, in one test run) matched an
+independently-written Postgres aggregate exactly, computed a different way
+(a plain `JOIN`+`SUM`, not the dedup/squash logic the dbt models use);
+`sessions`' count matching Postgres exactly is itself a delete-handling
+check, since a missed delete would have inflated it.
+
+Models are materialized as `view`s (dbt's default here), so each query
+re-reads the bucket fresh -- there's no separate "run to refresh" step the
+way `cdc/batch_load.py` has; querying a mart *is* the read. That also means
+no incremental-load state at all in this arm: every query rescans every
+matching object under `dt=*` in the bucket, in full. See
+`ARCHITECTURE_DECISIONS.md` (ADR-7) for why that's an acceptable, deliberate
+gap for now rather than an oversight.
+
+`cdc/dbt/profiles.yml` configures `httpfs` + MinIO's endpoint/credentials
+directly (`s3_endpoint`, `s3_url_style: path`, ...) -- separate from
+`dbt/profiles.yml` (the benchmark arm's project, pointed at
+`data/business.duckdb` with no S3 involved at all).
+
 ## Not done yet
 
 - **`s3-sink` now has an automated correctness check, transitively** --
@@ -309,6 +363,13 @@ magnitude higher than streaming lag).
   against Postgres.
 - `file-sink` has no partitioning (Kafka's built-in `FileStreamSinkConnector`
   has no templating mechanism) -- accepted as-is, see ADR-2.
+- `cdc/dbt/`'s models do a full rescan of the bucket on every query -- no
+  incremental logic, unlike `cdc/batch_load.py`'s object-key tracking. An
+  accepted gap for now, see ADR-7.
+- No correctness check comparing `cdc/dbt/`'s marts against `cdc/consumer.py`/
+  `cdc/batch_load.py`'s materialized DuckDB files directly (only against
+  Postgres) -- would catch a divergence between the three arms specifically,
+  not just against ground truth.
 - Possible future directions: Parquet/Avro output (both sinks currently write
   plain JSONL), or testing what happens to each sink under a Kafka Connect
   worker restart mid-batch.

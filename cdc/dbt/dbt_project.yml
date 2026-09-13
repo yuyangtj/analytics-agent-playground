@@ -1,0 +1,16 @@
+name: cdc_raw
+version: "1.0.0"
+config-version: 2
+
+profile: cdc_raw
+
+model-paths: ["models"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  cdc_raw:
+    +materialized: view
+    staging:
+      +schema: staging
+    marts:
+      +schema: marts
