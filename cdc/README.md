@@ -314,6 +314,16 @@ cd cdc/dbt
 ../../.venv/bin/dbt run --profiles-dir .
 ```
 
+**`cd` into `cdc/dbt` first -- don't just pass `--project-dir cdc/dbt
+--profiles-dir cdc/dbt` from elsewhere.** `profiles.yml`'s `path:
+cdc_raw.duckdb` is relative to your *current working directory when you run
+`dbt`*, not to `--project-dir`. Running from the repo root with those flags
+instead of `cd`-ing in silently creates `cdc_raw.duckdb` at the repo root --
+no error, dbt reports success, and `cdc/api/` (which looks in `cdc/dbt/`)
+then reports `cdc_raw.duckdb doesn't exist yet` even though `dbt run` just
+"succeeded." If that happens: delete the stray file at the repo root and
+re-run with `cd cdc/dbt` first.
+
 **Staging** (`models/staging/stg_cdc_*.sql`, one per table): squashes the
 raw change-event log into current state, entirely in SQL --
 `row_number() over (partition by pk order by source_ts_ms desc) = 1`,
