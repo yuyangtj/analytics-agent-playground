@@ -340,18 +340,58 @@ independently-written Postgres aggregate exactly, computed a different way
 `sessions`' count matching Postgres exactly is itself a delete-handling
 check, since a missed delete would have inflated it.
 
-Models are materialized as `view`s (dbt's default here), so each query
-re-reads the bucket fresh -- there's no separate "run to refresh" step the
-way `cdc/batch_load.py` has; querying a mart *is* the read. That also means
-no incremental-load state at all in this arm: every query rescans every
-matching object under `dt=*` in the bucket, in full. See
+**Staging** models are `view`s (dbt's default here), so each `dbt run`
+re-reads the bucket fresh -- no incremental-load state at all in this arm,
+every run rescans every matching object under `dt=*` in full. See
 `ARCHITECTURE_DECISIONS.md` (ADR-7) for why that's an acceptable, deliberate
-gap for now rather than an oversight.
+gap for now rather than an oversight. **Marts** are `table`s (overridden in
+`dbt_project.yml`), so the rescan happens once per `dbt run`, not once per
+*query* against a mart -- important once something other than a human
+running `dbt run` by hand is reading these, see "Analytics API" below.
 
 `cdc/dbt/profiles.yml` configures `httpfs` + MinIO's endpoint/credentials
 directly (`s3_endpoint`, `s3_url_style: path`, ...) -- separate from
 `dbt/profiles.yml` (the benchmark arm's project, pointed at
 `data/business.duckdb` with no S3 involved at all).
+
+## Analytics API: serving the marts to a frontend
+
+`cdc/api/` is a small FastAPI app sitting on top of `cdc/dbt/cdc_raw.duckdb`
+-- the intended shape for a dashboard frontend to call, rather than
+querying DuckDB directly.
+
+```bash
+cd cdc/dbt && ../../.venv/bin/dbt run --profiles-dir .   # refresh the marts first
+cd ../.. && .venv/bin/python -m cdc.api.main             # serves on :8000, docs at /docs
+```
+
+It never touches Kafka, Postgres, or MinIO/S3 itself -- only
+`cdc_raw.duckdb`, read-only. `dbt run` is the batch step that refreshes the
+mart *tables* this API reads; a request here is a plain table read, not a
+bucket rescan (which is exactly why marts were switched to `+materialized:
+table` above -- an API serving a frontend can't have every request trigger
+a full S3 read through several joined views).
+
+Endpoints: `/health` (mart tables present + queryable), `/metrics/revenue-by-channel`,
+`/metrics/customers-by-region`, `/metrics/inventory`, `/orders` (paginated,
+filterable by `status`/`channel`), `/orders/{order_id}`.
+
+Verified live: every endpoint's output checked against an
+independently-written Postgres aggregate, not just against the dbt marts
+themselves -- e.g. `/metrics/revenue-by-channel?channel=mobile_app` summed
+to the same `$3068.94` a plain Postgres `JOIN`+`SUM` produces (53 orders
+worth, reconciled against the mart's per-day grouping via `sum(order_count)`).
+
+Each endpoint opens its own short-lived read-only connection rather than
+holding one open for the app's lifetime (same DuckDB single-writer caveat
+as `dbt/README.md`'s for the benchmark arm: a `dbt run` and a concurrent API
+request can't both hold the file open). There's defensive error-handling
+code for that race (a `503` instead of a crash) -- **not actually verified
+live**: a real concurrent-write test didn't reproduce the conflict (dbt's
+12 tiny models finish in well under half a second, apparently too fast to
+reliably overlap with a single test request), so treat that path as
+reasonable-but-unconfirmed rather than proven, unlike everything else in
+this file.
 
 ## Not done yet
 

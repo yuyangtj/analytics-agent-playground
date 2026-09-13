@@ -283,18 +283,25 @@ time rather than letting `read_json_auto` infer structs) works identically
 regardless of what ops are present in a given read. Every staging model
 uses this pattern uniformly.
 
-**Deliberately no incremental logic**: every query against these models
-rescans everything matching `dt=*/*.jsonl` in the bucket, every time —
-unlike `cdc/batch_load.py`'s object-key state tracking. This is a real gap,
-accepted for now rather than fixed, because dbt's natural incremental
-mechanism (a target-table watermark) is exactly the pattern ADR-5 already
-rejected for `batch_load.py`, for the same late-arrival reason: a
-timestamp-watermark incremental model would silently miss an object that
-lands after the watermark has already advanced past its internal
-timestamp. Replicating `batch_load.py`'s exact-key tracking inside dbt/SQL
-is possible (anti-join a glob's `filename=true` column against a
-dbt-managed table of already-seen keys) but wasn't built here — bookkeeping
-`cdc/batch_load.py` already does, in Python, correctly.
+**Deliberately no incremental logic**: every `dbt run` rescans everything
+matching `dt=*/*.jsonl` in the bucket, in full — unlike `cdc/batch_load.py`'s
+object-key state tracking. This is a real gap, accepted for now rather than
+fixed, because dbt's natural incremental mechanism (a target-table
+watermark) is exactly the pattern ADR-5 already rejected for
+`batch_load.py`, for the same late-arrival reason: a timestamp-watermark
+incremental model would silently miss an object that lands after the
+watermark has already advanced past its internal timestamp. Replicating
+`batch_load.py`'s exact-key tracking inside dbt/SQL is possible (anti-join
+a glob's `filename=true` column against a dbt-managed table of already-seen
+keys) but wasn't built here — bookkeeping `cdc/batch_load.py` already does,
+in Python, correctly.
+
+(**Note, superseding a line originally in this ADR**: this used to say
+"querying a mart *is* the read," true when marts were `view`s. ADR-8
+changed marts to `table`s so an API could serve them without triggering a
+bucket rescan per request — the rescan now happens once per `dbt run`, not
+once per query. Staging models are still views and still rescan per `dbt
+run`; that part of this ADR is unchanged.)
 
 **Verified live, not just "it ran without error"**: every staging table's
 row count matched Postgres exactly (`customers`: 195, `sessions`: 1041 —
@@ -312,3 +319,49 @@ from `dbt/` (the benchmark arm) — different data source entirely (MinIO via
 `httpfs`, vs. `data/business.duckdb` directly), matching the general
 principle that the two arms of this repo stay decoupled, sharing only
 `generator/`'s entity/event logic.
+
+---
+
+## ADR-8: marts materialize as tables, not views; a FastAPI app serves them
+
+**Status**: Implemented (`cdc/api/`, `+materialized: table` on
+`cdc_raw`'s marts in `dbt_project.yml`).
+
+**Context**: ADR-7 built `cdc/dbt/`'s marts as `view`s — every query against
+them re-reads the whole MinIO bucket. Fine for a human running `dbt run` and
+poking at the result by hand. Not fine for a frontend dashboard hitting an
+API repeatedly: every request would trigger a full bucket rescan through
+several joined views, not a cheap read.
+
+**Decision**: switch marts (not staging — that stays views, rescanning per
+`dbt run` as before) to `+materialized: table`, and add `cdc/api/main.py`,
+a small FastAPI app reading `cdc/dbt/cdc_raw.duckdb` read-only. This
+splits the pipeline into a clear batch-refresh step (`dbt run`, rescans the
+bucket, writes real tables) and a serving step (the API, reads whatever
+tables already exist, fast, no S3 credentials or bucket access needed in
+the API process at all).
+
+**Endpoints**: `/health`, `/metrics/revenue-by-channel`,
+`/metrics/customers-by-region`, `/metrics/inventory`, `/orders`
+(paginated, filterable), `/orders/{order_id}` — each mapping close to one
+mart, plus basic filter/pagination query params.
+
+**Verified live**: every endpoint's output checked against an
+independently-written Postgres aggregate, not just against the marts
+themselves. `/metrics/revenue-by-channel?channel=mobile_app` summed to
+`$3068.94`, matching a plain Postgres `JOIN`+`SUM` exactly; the row count
+looked different at first (37 vs. 53) until accounting for the mart's
+per-day grouping — `sum(order_count)` across those 37 rows reconciled to
+the same 53 orders Postgres counted directly.
+
+**A real DuckDB single-writer caveat, same one already documented in
+`dbt/README.md` for the benchmark arm**: a `dbt run` (write) and an API
+request (read) against the same file can't both hold it open. Each
+endpoint opens its own short-lived read-only connection (rather than one
+held for the app's lifetime) to minimize that window, and there's
+defensive error-handling for it (`503` instead of a crash). **Not verified
+live**: an actual concurrent-write test was attempted and didn't reproduce
+the conflict — `dbt run`'s 12 tiny models finish in well under half a
+second, apparently too fast to reliably overlap with a single test
+request. Recorded honestly as unconfirmed, not silently assumed to work
+because the code looks reasonable.

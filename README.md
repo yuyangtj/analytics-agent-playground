@@ -159,10 +159,11 @@ to three different sinks: a DuckDB materializer, a local JSONL file, and a
 MinIO/S3 bucket. On top of the MinIO bucket sit two more independent paths:
 `cdc/batch_load.py` (incremental Python loader) and `cdc/dbt/` (dbt-duckdb
 models reading the raw JSONL directly via `httpfs`, squashing it to current
-state and computing real metrics in SQL). See `cdc/README.md` for the full
-pipeline, what each piece verifies, and known limitations. Fully independent
-of `data/business.duckdb` and the sections above — nothing here touches the
-agent or the benchmark.
+state and computing real metrics in SQL) — and `cdc/api/` serves those
+metrics over HTTP for a frontend dashboard to call. See `cdc/README.md` for
+the full pipeline, what each piece verifies, and known limitations. Fully
+independent of `data/business.duckdb` and the sections above — nothing here
+touches the agent or the benchmark.
 
 ## Repo layout
 
@@ -175,7 +176,8 @@ grader/       scoring logic + CLI
 dbt/          staging + marts modeling layer on top of data/business.duckdb
 cdc/          Postgres + Debezium/Kafka Connect CDC pipeline (replay, consumer,
               verify, batch_load, and DuckDB/file/MinIO sinks);
-              cdc/dbt/ models the raw MinIO storage directly -- see cdc/README.md
+              cdc/dbt/ models the raw MinIO storage directly, cdc/api/ serves
+              those metrics over HTTP -- see cdc/README.md
 data/         generated DB + issue_log.json (gitignored, regenerate via generator.generate)
 ```
 
