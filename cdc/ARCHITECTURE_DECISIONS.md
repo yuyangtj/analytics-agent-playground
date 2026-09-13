@@ -214,24 +214,34 @@ the outcome, only how state is tracked.
 
 ## ADR-6: `s3-sink`'s output format (JSONL vs. Parquet)
 
-**Status**: Proposed, not yet implemented. Full comparison in
+**Status**: Investigated live; not switching for now. Full writeup in
 `FILE_FORMATS.md`; this is the short version for the decision log.
 
 **Context**: Both `file-sink` and `s3-sink` write JSONL today. That was
 never a deliberate choice against Parquet — the connector was configured
 for readability while everything else got built and verified by eyeballing
-raw output. Verified directly against the connector's own jar: `s3-sink`'s
-connector (`s3-connector-for-apache-kafka`) already bundles full Parquet
-write support (`parquet-avro`, `parquet-hadoop`, ...), and `parquet` is a
-real, working value for `format.output.type` — switching is a one-line
-config change, not a new integration.
+raw output. `s3-sink`'s connector (`s3-connector-for-apache-kafka`) bundles
+full Parquet write support (`parquet-avro`, `parquet-hadoop`, ...), and
+`parquet` is a real value for `format.output.type`.
 
-**Leaning**: switch `s3-sink` to `parquet` before or alongside the
-dbt-on-raw-files work, since that's exactly the scenario where Parquet's
-read-side pruning (row-group statistics, column pruning — beyond the
-path-based partition pruning JSONL gets too) stops being a theoretical
-advantage. Leave `file-sink` on JSONL -- `FileStreamSinkConnector` has no
-format option at all, and JSONL's human-readability has had real,
-concrete value throughout this project so far (every sample file we've
-eyeballed by hand). Not yet implemented -- recorded here as the direction,
-pending actually making the change.
+**What testing this live actually found**: the first pass at this ADR
+claimed switching was a one-line sink-side config change. Tested directly
+and that was wrong — pointing a `parquet` sink at our real (schemaless)
+topics fails immediately with
+`SchemaProjectorException: Record must have schemas for key and value`.
+Parquet can't be written from schemaless records. Confirmed the fix by
+standing up an isolated second source connector with `schemas.enable=true`
+on a throwaway topic and pointing a Parquet sink at that — it worked,
+producing a genuinely valid, DuckDB-readable Parquet file with a proper
+nested `STRUCT` schema. But `schemas.enable` is a property of the *source*
+connector's output, shared by every consumer of that topic — switching it
+on the real pipeline would break `cdc/consumer.py` and `cdc/batch_load.py`
+(both parse the flat, schemaless JSON shape directly) and grow every
+message on every topic, not just the ones headed to `s3-sink`.
+
+**Decision**: not worth that blast radius just for one sink's file format.
+Keep `s3-sink` on JSONL for the main pipeline; the dbt-on-raw-files work
+gets path-based partition pruning (still real) but not row-group/column
+pruning. If the Parquet read-side story is ever worth measuring for real,
+the isolated second-source-connector pattern used to verify this is the
+way to do it without touching the main pipeline's wire format.

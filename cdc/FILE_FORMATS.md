@@ -42,10 +42,22 @@ written in row-group batches with an embedded schema and per-column
 statistics computed over the batch. The connector we're already running
 (`s3-connector-for-apache-kafka`) can do this: it bundles `parquet-avro`,
 `parquet-hadoop`, and friends, and writes Parquet via an Avro schema derived
-from the records it's buffering. Confirmed directly against the jar (not
-assumed): `format.output.type` accepts `parquet` as a real, working value on
-the exact connector already deployed — switching is a one-line config
-change (`connectors/s3-sink.json`), not a new integration.
+from the records it's buffering.
+
+**Correction, verified live rather than left as an assumption**: this
+originally said switching was a one-line sink-side config change. It isn't.
+Tested directly: pointing a `format.output.type=parquet` sink at our actual
+schemaless topics fails immediately —
+`SchemaProjectorException: Record must have schemas for key and value`.
+Parquet is a typed columnar format; it cannot be written from a schemaless
+`Map`, full stop. Confirmed the fix works by standing up an isolated second
+source connector with `schemas.enable=true` on a throwaway topic prefix,
+pointing a Parquet sink at *that*, and reading the result back with
+`read_parquet()` — it produced a genuinely valid Parquet file with a proper
+nested `STRUCT` schema (`before`/`after`/`source` as real typed columns, not
+a blob). So Parquet output does work, and works well, but only once the
+*source* connector carries real schemas — see "The real cost" below for
+what that actually implies once accounted for correctly.
 
 ### Read side — this is where the earlier DuckDB discussion cashes out
 
@@ -118,11 +130,43 @@ data-lake setups (usually mitigated with a periodic compaction job merging
 small files into larger ones) — something to be aware of if we do switch,
 not necessarily something to solve now.
 
+### The real cost: `schemas.enable=true` isn't scoped to `s3-sink`
+
+This is the part the original version of this doc got wrong, and it changes
+the shape of the decision. `schemas.enable` is a property of the *bytes on
+the topic*, set by the connector that writes them — `postgres-source`, not
+any individual sink. A sink can't unilaterally decide to parse an embedded
+schema that was never written; the schema has to exist on the wire in the
+first place. So switching `s3-sink` to Parquet means switching
+`postgres-source` to `schemas.enable=true`, which affects *every* consumer
+of `business.public.*`, not just this one sink:
+
+- **`cdc/consumer.py` and `cdc/batch_load.py`** would break outright —
+  both do `json.loads(raw_value)` and read `event["op"]`/`event["after"]`
+  directly, assuming the flat shape. With schemas on, the JSON is wrapped in
+  a `{"schema": ..., "payload": ...}` envelope (standard `JsonConverter`
+  behavior, not a bug); every read site needs to unwrap `payload` first.
+  This is exactly the code-change cost flagged in the earlier
+  schema-registry discussion, now confirmed as the actual blocker for
+  Parquet specifically, not just a hypothetical tradeoff.
+- **`file-sink`** stays fine either way — it just echoes bytes through, so
+  the schema envelope changes what a human sees in the file but breaks
+  nothing.
+- **Message size on every topic** increases — the full schema, inlined,
+  on every message, not a compact registry-issued ID (there's still no
+  registry here; see the earlier schema-registry conversation for why
+  `schemas.enable=true` alone gets you the schema *present*, not
+  compatibility *enforced*).
+
+So this isn't "flip a flag on `s3-sink`." It's "commit to real schemas on
+the whole pipeline," with `s3-sink`'s Parquet output as the payoff.
+
 ## Where this leaves the format choice
 
 |  | JSONL (today) | Parquet |
 |---|---|---|
-| Write-side simplicity | Best | Fine (connector already supports it) |
+| Write-side simplicity | Best | Fine, but only once the source carries real schemas |
+| Blast radius to switch | None | `postgres-source` + every downstream reader (`consumer.py`, `batch_load.py`) |
 | Query pruning (column + row-group) | Path-only | Path + within-file |
 | Storage size | Worst | Best |
 | Self-describing schema | No | Yes, but per-file, with the union-schema wrinkle across files |
@@ -132,17 +176,26 @@ not necessarily something to solve now.
 Nothing here is a slam-dunk either way at this playground's scale — the
 performance/size advantages of Parquet are real but currently unmeasurable
 on data this small, while JSONL's inspectability has had genuine, concrete
-value throughout this project already. The place this stops being a wash is
-specifically the dbt-on-raw-files work about to start: that's exactly the
-scenario (a query engine reading the raw storage directly, repeatedly,
-potentially at a larger scale later) where Parquet's read-side advantages
-are the actual point, not a hypothetical one.
+value throughout this project already. What's changed since the first draft
+of this doc is the actual price of admission: it's not a sink-side toggle,
+it's a pipeline-wide commitment to schemas, with real code changes in two
+places that currently assume schemaless JSON.
 
-**Recommendation**: keep `file-sink` on JSONL (it's the quick, inspectable,
-zero-dependency check; switching it to Parquet isn't even straightforward —
-`FileStreamSinkConnector` has no format option, it would need a different
-connector entirely). For `s3-sink`, switch `format.output.type` to `parquet`
-before or alongside the dbt-on-raw-files work, since that's precisely where
-the read-side difference stops being theoretical. Keep a way to regenerate a
-JSONL sample on demand (`file-sink`, or a one-off `format.output.type=jsonl`
-run) for whenever a human needs to eyeball something.
+**Recommendation, revised**: don't switch the *main* pipeline's
+`postgres-source` to `schemas.enable=true` just to get Parquet — that cost
+(rewriting `consumer.py`/`batch_load.py`'s parsing, plus every message
+getting bigger everywhere) is disproportionate to what this playground
+actually needs to test right now. Two narrower options instead:
+- **Keep `s3-sink` on JSONL**, accept that the dbt-on-raw-files work reads
+  JSONL and only gets path-based partition pruning, not row-group/column
+  pruning — still real, still worth building, just not the strongest
+  version of the read-side story.
+- **Stand up a second, schema-carrying source connector** on its own topic
+  prefix (exactly what was used to verify this, live) purely for a Parquet
+  arm, without touching the main pipeline's wire format or any existing
+  reader's code. More infrastructure, but genuinely isolated — the pattern
+  already proven to work.
+
+Either way, keep `file-sink` on JSONL regardless (it's the quick,
+inspectable, zero-dependency check; switching it to Parquet isn't even
+possible — `FileStreamSinkConnector` has no format option at all).
