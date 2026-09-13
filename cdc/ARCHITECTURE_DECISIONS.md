@@ -209,3 +209,29 @@ throughout both passes, not just at the end. `cdc/verify.py --materialized
 cdc/batch_materialized.duckdb` was run against the final state directly as
 part of the second pass, confirming the transactional rework didn't change
 the outcome, only how state is tracked.
+
+---
+
+## ADR-6: `s3-sink`'s output format (JSONL vs. Parquet)
+
+**Status**: Proposed, not yet implemented. Full comparison in
+`FILE_FORMATS.md`; this is the short version for the decision log.
+
+**Context**: Both `file-sink` and `s3-sink` write JSONL today. That was
+never a deliberate choice against Parquet — the connector was configured
+for readability while everything else got built and verified by eyeballing
+raw output. Verified directly against the connector's own jar: `s3-sink`'s
+connector (`s3-connector-for-apache-kafka`) already bundles full Parquet
+write support (`parquet-avro`, `parquet-hadoop`, ...), and `parquet` is a
+real, working value for `format.output.type` — switching is a one-line
+config change, not a new integration.
+
+**Leaning**: switch `s3-sink` to `parquet` before or alongside the
+dbt-on-raw-files work, since that's exactly the scenario where Parquet's
+read-side pruning (row-group statistics, column pruning — beyond the
+path-based partition pruning JSONL gets too) stops being a theoretical
+advantage. Leave `file-sink` on JSONL -- `FileStreamSinkConnector` has no
+format option at all, and JSONL's human-readability has had real,
+concrete value throughout this project so far (every sample file we've
+eyeballed by hand). Not yet implemented -- recorded here as the direction,
+pending actually making the change.
