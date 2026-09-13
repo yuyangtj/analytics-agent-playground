@@ -199,3 +199,43 @@ actually needs to test right now. Two narrower options instead:
 Either way, keep `file-sink` on JSONL regardless (it's the quick,
 inspectable, zero-dependency check; switching it to Parquet isn't even
 possible — `FileStreamSinkConnector` has no format option at all).
+
+## When to actually revisit this
+
+The decision above is specific to this playground's current scale and
+purpose, not a general claim that JSONL beats Parquet. Worth switching
+`s3-sink` to Parquet (accepting the `schemas.enable=true` blast radius) if
+any of these become true:
+
+- **Data volume grows enough that storage/scan cost is real.** JSONL's
+  per-record field-name repetition and lack of columnar compression are
+  invisible at KBs-per-object; they stop being invisible at GB-TB scale, or
+  anywhere query cost is billed per byte scanned (Athena, BigQuery).
+- **Downstream queries typically touch a handful of fields out of many.**
+  Parquet's column pruning only pays off when readers don't need the whole
+  record every time. If every read wants the full envelope anyway, this
+  advantage is moot.
+- **The raw storage gets read many times, not once.** The read-side cost
+  savings compound per read. A landing zone that's written once and rarely
+  re-scanned gets little benefit from paying the write-side cost.
+- **A real schema registry (Avro/Protobuf + Confluent-style registry) gets
+  built for other reasons.** That's the scenario where the actual blocker
+  here (no schema on the wire) disappears as a side effect of solving a
+  different problem, and Parquet output becomes close to free.
+- **The consuming ecosystem is Parquet-native.** Spark, Trino/Athena,
+  Snowflake/BigQuery external tables, or any Iceberg/Delta/Hudi table
+  format (all three are *built on* Parquet, not just compatible with it) —
+  if that's who ends up reading this raw storage, Parquet stops being an
+  optimization and becomes the price of entry.
+
+**The one that actually applies to the very next thing being built**: none
+of the above require touching `postgres-source` at all. The dbt-on-raw-files
+work reads JSONL, dedups/squashes the CDC envelope into current state via
+SQL, and *that* transformation's output — a plain query result, not
+schemaless Debezium envelope JSON — can be materialized as Parquet by
+`dbt-duckdb` trivially, since the schema problem that blocks the raw layer
+doesn't exist at that layer at all. So the realistic shape isn't "JSONL vs.
+Parquet at the landing zone" — it's the standard raw/bronze → curated/silver
+split: **JSONL stays the landing format, Parquet becomes the transformation
+step's *output* format**, sidestepping the blast-radius problem entirely
+rather than waiting on any of the criteria above.
