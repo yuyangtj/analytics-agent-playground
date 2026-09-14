@@ -4,6 +4,10 @@ One entry per tagged release: roughly what's implemented at that point, and
 (for everything after the first) what's new since the previous tag. Not a
 commit-by-commit log — see `git log` for that.
 
+Tag prefix tracks which component (see the top-level `README.md`) a
+release belongs to: `baseline-v*` is Component 1 (analytics agent),
+`cdc-v*` is Component 2 (CDC pipeline).
+
 ## `cdc-v5` — 2026-09-13
 
 **Incremental since `cdc-v4`:**

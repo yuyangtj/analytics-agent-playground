@@ -1,40 +1,46 @@
 # Analytics Agent Playground
 
-Two independent test arms, sharing only `generator/`'s entity/event logic:
+One project, one shared synthetic e-commerce dataset generator, and a
+growing set of **data platform components under test** — each one
+answering a different question about how well a platform actually holds up
+under realistic conditions, not just whether it runs.
 
-- **Agent benchmark** (sections 1–5) — a synthetic e-commerce business in
-  DuckDB with deliberately injected data-quality issues, and a benchmark
-  measuring whether an analytics agent (1) answers business questions
-  correctly and (2) recognizes when the data is missing, ambiguous, or
-  unreliable rather than confidently answering anyway.
-- **CDC pipeline** (section 6, `cdc/`) — the same business, but replayed as
-  a stream of inserts/updates/deletes into Postgres, captured with
-  Debezium/Kafka, and tested for whether a change-data-capture pipeline
-  propagates those changes correctly and how much lag it introduces at
-  each stage: streaming, batch, and raw-file/SQL.
+| # | Component | Question it answers |
+|---|---|---|
+| 1 | [Analytics agent](#component-1-analytics-agent) | Does an LLM agent answer business questions correctly, *and* recognize when the data can't support an answer, rather than confidently guessing? |
+| 2 | [CDC pipeline](#component-2-cdc-pipeline-optional) | Does a change-data-capture pipeline propagate inserts/updates/deletes correctly, and how much lag does it introduce — at the streaming, batch, and raw-file/SQL layers? |
 
-Neither depends on the other's output.
+Components don't depend on each other's output — each is independently
+runnable — but they share `generator/`'s entity/event logic, so the same
+synthetic business (customers, products, orders, returns, inventory, ...)
+underlies every one of them. See "[Adding a new component](#adding-a-new-component)"
+for the convention new ones follow.
 
 ```mermaid
 flowchart TB
-    subgraph benchmark["Agent benchmark (sections 1-5)"]
-        GEN["generator/generate.py"] --> DUCK[("data/business.duckdb<br/>+ issue_log.json")]
+    GEN["generator/<br/>(shared entity/event logic)"]
+
+    subgraph c1["Component 1: Analytics agent"]
+        DUCK[("data/business.duckdb<br/>+ issue_log.json")]
         DUCK --> AGENT["agent/ (Claude/Kimi)"]
         DUCK --> DBT["dbt/: staging + marts"]
         AGENT --> GRADER["grader/ (correctness + awareness)"]
     end
 
-    subgraph cdc["CDC pipeline (section 6, cdc/)"]
-        EL["generator/eventlog.py"] -->|"cdc/replay.py, paced"| PG[("Postgres")]
+    subgraph c2["Component 2: CDC pipeline"]
+        PG[("Postgres")]
         PG --> DBZ["Debezium / Kafka Connect"]
         DBZ --> SINKS["3 sinks: DuckDB, local file, MinIO/S3"]
         SINKS -->|"cdc/batch_load.py"| BATCH[("DuckDB, incremental")]
         SINKS -->|"cdc/dbt/, via httpfs"| CDCDBT["marts + metrics"]
         CDCDBT --> API["cdc/api/"] --> UI["cdc/frontend/"]
     end
+
+    GEN -->|"generator/generate.py"| DUCK
+    GEN -->|"generator/eventlog.py, via cdc/replay.py"| PG
 ```
 
-See `cdc/README.md` for the CDC arm's own, more detailed diagram and
+See `cdc/README.md` for Component 2's own, more detailed diagram and
 per-piece verification notes.
 
 ## Setup
@@ -55,7 +61,15 @@ export KIMI_BASE_URL=https://api.kimi.com/coding   # Kimi's Anthropic-compatible
 
 ---
 
-## 1. Generate the database
+## Component 1: Analytics agent
+
+A synthetic e-commerce business in DuckDB with deliberately injected
+data-quality issues, and a benchmark measuring whether an analytics agent
+(1) answers business questions correctly and (2) recognizes when the data
+is missing, ambiguous, or unreliable rather than confidently answering
+anyway.
+
+### 1. Generate the database
 
 ```bash
 .venv/bin/python -m generator.generate
@@ -71,7 +85,7 @@ snapshots. Ground truth for every injected issue is written to
 
 Regeneration is deterministic (fixed seed), so re-running produces the same data.
 
-## 2. Ask the agent a question directly
+### 2. Ask the agent a question directly
 
 ```bash
 .venv/bin/python -m agent.cli --provider kimi --db data/business.duckdb \
@@ -89,7 +103,7 @@ Useful flags: `--model` (override the provider default), `--reasoning-effort
 {low,high,max}` (Kimi k3/k3-256k only, default `low`), `--max-turns`,
 `--system-prompt`.
 
-## 3. Run the benchmark
+### 3. Run the benchmark
 
 ```bash
 .venv/bin/python -m benchmark.run --provider kimi --grade
@@ -105,7 +119,7 @@ The agent only ever sees `data/business.duckdb` plus, if you choose to hand it
 over, `benchmark/schema_readme.md` (honest column/type docs with zero disclosure
 of which issues were injected).
 
-## 4. Grade separately
+### 4. Grade separately
 
 ```bash
 .venv/bin/python -m grader.grade --answers benchmark/results/<run_id>.json
@@ -124,7 +138,7 @@ as a lower bound (an agent that flags an issue in unanticipated wording won't be
 credited). `grader/fixtures/{good,naive}_answers.json` are reference answer sets
 used to sanity-check the grader itself.
 
-## 5. dbt models (optional modeling layer)
+### 5. dbt models (optional modeling layer)
 
 ```bash
 cd dbt && ../.venv/bin/dbt run --profiles-dir .
@@ -151,9 +165,21 @@ active — and re-run it after `python -m generator.generate` if you want the ma
 schemas refreshed (materialized as views, so they'll reflect new data automatically,
 but a fresh DB file needs `dbt run` at least once to recreate the schemas in it).
 
+### Regenerating questions.yaml
+
+`benchmark/questions.yaml`'s expected answers are computed from a clean
+(pre-injection) database build, not the served one:
+
+```bash
+.venv/bin/python -m benchmark.build_questions
+```
+
+Only needs re-running if you change `generator/config.py` (scale, date range) or
+edit the question definitions in `benchmark/build_questions.py` directly.
+
 ---
 
-## 6. CDC pipeline (optional)
+## Component 2: CDC pipeline (optional)
 
 ```bash
 cd cdc && docker compose up -d
@@ -191,20 +217,33 @@ mounted same-origin so no CORS setup is needed.
 See `cdc/README.md` for the full pipeline, what each piece verifies, and
 known limitations; `cdc/ARCHITECTURE_DECISIONS.md` for the reasoning
 behind the less-obvious choices. Fully independent of `data/business.duckdb`
-and the sections above — nothing here touches the agent or the benchmark.
+and Component 1 — nothing here touches the agent or the benchmark.
 
 ---
+
+## Adding a new component
+
+The convention so far, if you're adding a third: give it its own top-level
+directory (like `cdc/`, not folded into an existing one), let it reuse
+`generator/`'s entity/event logic rather than inventing a new dataset, keep
+its own `README.md` (and, if the design decisions are non-obvious, its own
+`ARCHITECTURE_DECISIONS.md` — Component 2's has been worth it) instead of
+cramming everything into this file, and add one row to the table at the top
+here plus a `## Component N: ...` section with just enough to get someone
+running it and pointed at the deeper docs.
 
 ## Repo layout
 
 ```
-generator/    builds the clean DB, then injects the 9 data-quality issues;
-              generator/eventlog.py builds the CDC pipeline's replayable event stream
-agent/        the tool-use analytics agent (run_sql loop, Claude/Kimi providers)
-benchmark/    schema doc for the agent, questions.yaml, the run.py driver
-grader/       scoring logic + CLI
-dbt/          staging + marts modeling layer on top of data/business.duckdb
-cdc/          Postgres + Debezium/Kafka Connect CDC pipeline
+generator/    shared foundation, not a component itself -- entity/event
+              generation logic every component builds on. generate.py
+              builds Component 1's DuckDB snapshot; eventlog.py builds
+              Component 2's replayable event stream
+agent/        Component 1: the tool-use analytics agent (run_sql loop, Claude/Kimi providers)
+benchmark/    Component 1: schema doc for the agent, questions.yaml, the run.py driver
+grader/       Component 1: scoring logic + CLI
+dbt/          Component 1: staging + marts modeling layer on top of data/business.duckdb
+cdc/          Component 2: Postgres + Debezium/Kafka Connect CDC pipeline
   replay.py, consumer.py, verify.py, batch_load.py, schema_map.py -- the
     Python side: replay, streaming consumer, correctness/lag checks,
     incremental batch loader, and the shared Debezium-envelope decode
@@ -222,18 +261,6 @@ cdc/          Postgres + Debezium/Kafka Connect CDC pipeline
 data/         generated DB + issue_log.json (gitignored, regenerate via generator.generate)
 ```
 
-See `CHANGELOG.md` for what's implemented as of each tagged release
-(`baseline-v1`, `cdc-v1`, `cdc-v2`, ...) and what's new incrementally at
-each one.
-
-## Regenerating questions.yaml
-
-`benchmark/questions.yaml`'s expected answers are computed from a clean
-(pre-injection) database build, not the served one:
-
-```bash
-.venv/bin/python -m benchmark.build_questions
-```
-
-Only needs re-running if you change `generator/config.py` (scale, date range) or
-edit the question definitions in `benchmark/build_questions.py` directly.
+See `CHANGELOG.md` for what's implemented as of each tagged release —
+`baseline-v1` tracks Component 1, `cdc-v1`/`cdc-v2`/... track Component 2 —
+and what's new incrementally at each one.
