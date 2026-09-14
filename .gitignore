@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.egg-info/
+.DS_Store
 data/business.duckdb
 data/issue_log.json
 cdc/materialized.duckdb
