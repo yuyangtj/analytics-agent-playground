@@ -227,6 +227,14 @@ two more independent paths sit on top of the bucket:
   inventory reorder status) in SQL, with no Python CDC-parsing code
   involved.
 
+`cdc/consumer.py`, `cdc/batch_load.py`, and `cdc/dbt/` are also one
+deliberate comparison — streaming vs. micro-batch vs. pure batch, same
+underlying data. `cdc/compare_ingestion.py` reports lag side by side
+across all three; `cdc/INGESTION_STRATEGIES.md` has the full writeup,
+including a real methodology bug hit while building it (Kafka backlog
+from an earlier session silently produced a 29-hour "lag" that had
+nothing to do with any of the three strategies).
+
 `cdc/api/` is a small FastAPI app serving those metrics over HTTP — it
 never touches Kafka/Postgres/MinIO itself, only the DuckDB file `dbt run`
 produces — including a `/meta` endpoint reporting when the marts were last
