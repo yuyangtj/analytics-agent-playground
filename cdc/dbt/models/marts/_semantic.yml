@@ -1,0 +1,39 @@
+semantic_models:
+  - name: cdc_orders
+    model: ref('fct_cdc_orders')
+    defaults:
+      agg_time_dimension: order_date
+    entities:
+      - name: order_id
+        type: primary
+      - name: customer_id
+        type: foreign
+    dimensions:
+      - name: order_date
+        type: time
+        type_params:
+          time_granularity: day
+      - name: status
+        type: categorical
+      - name: channel
+        type: categorical
+      - name: customer_region
+        type: categorical
+    measures:
+      - name: order_revenue
+        agg: sum
+      - name: order_count
+        agg: count
+        expr: order_id
+
+metrics:
+  - name: total_revenue
+    type: simple
+    label: Total Revenue
+    type_params:
+      measure: order_revenue
+  - name: order_count
+    type: simple
+    label: Order Count
+    type_params:
+      measure: order_count

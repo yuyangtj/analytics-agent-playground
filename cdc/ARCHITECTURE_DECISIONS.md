@@ -523,3 +523,98 @@ exactly (283 in all four places). So the comparison is genuinely only
 about latency and operational shape, not a speed-vs-correctness tradeoff —
 worth stating plainly rather than assuming "faster must mean less
 correct" when the data doesn't show that here.
+
+---
+
+## ADR-12: `/semantic/query` builds a fresh MetricFlow engine per request, not a held one
+
+**Status**: Implemented (`cdc/api/main.py`'s `_metricflow_query`/`/semantic/query`,
+`cdc/dbt/models/marts/_semantic.yml`).
+
+**Context**: `cdc/api/main.py` already serves the marts as hand-written SQL
+(`/metrics/*`, `/orders*`). The dbt Semantic Layer (MetricFlow) is a second,
+alternative way to serve the *same* marts: metrics and dimensions declared
+once in `_semantic.yml` against `fct_cdc_orders`, queried by name
+(`total_revenue`, `order_count`) with dimensions like `order_id__channel`,
+rather than one hand-written SQL query per shape of question. Both exist
+side by side deliberately, to compare them as serving layers, not because
+one is meant to replace the other.
+
+The `_query()` helper already answers the "hold a connection open, or open
+one per request?" question for plain SQL (ADR-8: per request, because
+DuckDB is single-writer and a held connection would block `dbt run`
+indefinitely). MetricFlow raises the same question with a much higher
+stake on one side: building a `MetricFlowEngine` costs ~0.9s (semantic
+manifest load + adapter setup), against ~10-20ms per query once built — a
+90x difference that makes "hold it across requests" look obviously
+worth doing, in isolation.
+
+**Decision**: Build a fresh `MetricFlowEngine` (via `CLIConfiguration`) on
+every `/semantic/query` request and discard it before returning, exactly
+mirroring `_query()`'s philosophy rather than optimizing around it.
+
+**Why, verified live rather than assumed**: set up a synchronized test —
+a background process builds one `MetricFlowEngine`, holds it, and blocks
+on a signal file before querying again with the *same* object — to answer
+two questions: does a held engine see fresh data after a later `dbt run`
+with no rebuild, and does holding it block that `dbt run`? The `dbt run`
+run while the engine was held failed outright:
+
+```
+_duckdb.IOException: IO Error: Could not set lock on file ".../cdc_raw.duckdb":
+Conflicting lock is held in .../Python (PID 97166) by user yangyu.
+```
+
+So the real answer isn't "the held engine goes stale" (a correctness bug
+you could imagine tolerating with a TTL) — it's that a held engine's
+DuckDB connection is exclusive and permanently blocks `dbt run` for as
+long as the process holding it is alive. That's strictly worse than the
+plain API's per-request connections (ADR-8), which at least self-close
+between requests and only risk a *rare, brief* conflict window. A
+persistent engine would turn "occasionally slow" into "the pipeline can
+never refresh while the API process is running" — not an acceptable
+trade for the 90x per-query speedup.
+
+**Two real bugs found building the per-request version** (both were
+"works once, breaks the process afterward" — the kind that a test hitting
+the endpoint exactly once would miss entirely):
+
+1. **CWD-relative path, again.** `CLIConfiguration.setup()` resolves the
+   dbt-duckdb adapter's `path:` relative to the process CWD, not the
+   `dbt_project_path` argument passed in — the same footgun `cdc/dbt/run.sh`
+   already exists to work around for the dbt CLI (see ADR-9-adjacent
+   history in `cdc/dbt/run.sh` itself). Calling it from the API process's
+   CWD (repo root) silently opened a *different, empty* `cdc_raw.duckdb`
+   at the repo root and failed with a schema-not-found error. Fixed by
+   `os.chdir()`-ing into `cdc/dbt/` for the duration of the call and
+   restoring it in a `finally`.
+2. **The engine's connection outlives the request even after "closing"
+   it.** The first working version called
+   `adapter.connections.cleanup_all()` in a `finally` block, expecting
+   that to release the connection — it didn't. Confirmed live: every
+   *other* endpoint (`/health`, `/meta`, `/metrics/*`) started failing
+   with `Can't open a connection to same database file with a different
+   configuration than existing connections` for the rest of the process's
+   life, the first time `/semantic/query` was hit, even without holding
+   any live Python reference to the engine. Root cause: `DuckDBConnection
+   Manager._ENV` — the object that actually wraps the raw duckdb
+   connection — is a *class* attribute on `DuckDBConnectionManager`,
+   shared by every adapter instance in the process, not per-instance
+   state; `cleanup_all()` closes this request's `Connection` wrapper but
+   never clears `_ENV`. Fixed by also calling the classmethod
+   `close_all_connections()`, which is what actually resets `_ENV` to
+   `None` so the next `duckdb.connect()` (from this endpoint or from
+   `_query()`) gets a clean slate. Verified live with an interleaved
+   sequence (`/semantic/query` → `/health` → `/meta` →
+   `/metrics/revenue-by-channel` → `/semantic/query` again → `/health`
+   again), each call succeeding.
+
+**Verified live**: `mf query --metrics total_revenue --group-by
+order_id__channel` (CLI) and `/semantic/query?metrics=total_revenue&
+group_by=order_id__channel` (API, same manifest) both return
+`marketplace 16220.95, web 13008.91, mobile_app 11449.20`, matching an
+independently-computed Postgres query on the same data. Values increased
+between an earlier check and this one purely because more events had been
+replayed and `dbt run` re-materialized in between — itself a small
+confirmation that the per-request engine reads current data, not a cached
+snapshot.
