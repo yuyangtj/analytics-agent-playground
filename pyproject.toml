@@ -19,6 +19,7 @@ dependencies = [
     "boto3>=1.34.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
+    "dbt-metricflow[dbt-duckdb]>=0.15.0",
 ]
 
 [tool.setuptools.packages.find]

@@ -390,7 +390,8 @@ a full S3 read through several joined views).
 Endpoints: `/health` (mart tables present + queryable), `/meta` (data
 freshness -- see below), `/metrics/revenue-by-channel`,
 `/metrics/customers-by-region`, `/metrics/inventory`, `/orders` (paginated,
-filterable by `status`/`channel`), `/orders/{order_id}`.
+filterable by `status`/`channel`), `/orders/{order_id}`, `/semantic/query`
+(same marts, served through the dbt Semantic Layer instead -- see below).
 
 **`/meta` answers two different questions that are easy to conflate**:
 "when were the numbers you're looking at last computed" and "how far
@@ -459,6 +460,34 @@ version pin and added a `safeChart()` wrapper so a chart failure can never
 again take its section's table down with it -- see `ARCHITECTURE_DECISIONS.md`
 ADR-9 for the full story. Still worth an eyeball pass in a real browser
 after any change here; this environment still can't visually confirm it.
+
+## Semantic layer: the same marts, served through MetricFlow instead
+
+`/semantic/query` answers the same questions as `/metrics/*`, but through
+the dbt Semantic Layer (MetricFlow) rather than hand-written SQL. Metrics
+and dimensions are declared once in `cdc/dbt/models/marts/_semantic.yml`
+against `fct_cdc_orders`, and any metric × declared-dimension combination
+is queryable without a new endpoint:
+
+```bash
+curl 'localhost:8000/semantic/query?metrics=total_revenue&group_by=order_id__channel'
+curl 'localhost:8000/semantic/query?metrics=order_count' \
+  --data-urlencode "where={{ Dimension('order_id__channel') }} = 'web'" -G
+
+# or via the MetricFlow CLI directly:
+cd cdc/dbt && ../../.venv/bin/mf query --metrics total_revenue --group-by order_id__channel
+```
+
+Building and discarding a `MetricFlowEngine` per request (not holding one
+across requests, despite it costing ~0.9s to build vs. ~10-20ms per query
+once built) was a deliberate choice, verified live rather than assumed: a
+held engine's DuckDB connection is exclusive for as long as it's alive,
+and a `dbt run` fired while one was held failed outright with a lock
+conflict rather than just seeing stale data. See `SEMANTIC_LAYER.md` for
+the full REST-vs-semantic-layer comparison and ADR-12 for that test and
+two more MetricFlow-specific bugs found building this (a CWD-relative
+path footgun, and a process-wide connection leak that broke every other
+endpoint until fixed).
 
 ## Comparing ingestion strategies
 
