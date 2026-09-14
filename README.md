@@ -1,30 +1,41 @@
 # Analytics Agent Playground
 
-A synthetic e-commerce business (in DuckDB) with deliberately injected data-quality
-issues, plus a benchmark that measures whether an analytics agent can (1) answer
-business questions correctly and (2) recognize when the data is missing, ambiguous,
-or unreliable rather than confidently answering anyway.
+Two independent test arms, sharing only `generator/`'s entity/event logic:
+
+- **Agent benchmark** (sections 1–5) — a synthetic e-commerce business in
+  DuckDB with deliberately injected data-quality issues, and a benchmark
+  measuring whether an analytics agent (1) answers business questions
+  correctly and (2) recognizes when the data is missing, ambiguous, or
+  unreliable rather than confidently answering anyway.
+- **CDC pipeline** (section 6, `cdc/`) — the same business, but replayed as
+  a stream of inserts/updates/deletes into Postgres, captured with
+  Debezium/Kafka, and tested for whether a change-data-capture pipeline
+  propagates those changes correctly and how much lag it introduces at
+  each stage: streaming, batch, and raw-file/SQL.
+
+Neither depends on the other's output.
 
 ```mermaid
 flowchart TB
     subgraph benchmark["Agent benchmark (sections 1-5)"]
         GEN["generator/generate.py"] --> DUCK[("data/business.duckdb<br/>+ issue_log.json")]
         DUCK --> AGENT["agent/ (Claude/Kimi)"]
-        DUCK --> DBT["dbt staging + marts"]
+        DUCK --> DBT["dbt/: staging + marts"]
         AGENT --> GRADER["grader/ (correctness + awareness)"]
     end
 
     subgraph cdc["CDC pipeline (section 6, cdc/)"]
-        EL["generator/eventlog.py"] --> PG[("Postgres")]
-        PG --> DBZ["Debezium / Kafka Connect"] --> SINKS["DuckDB, files, MinIO/S3"]
+        EL["generator/eventlog.py"] -->|"cdc/replay.py, paced"| PG[("Postgres")]
+        PG --> DBZ["Debezium / Kafka Connect"]
+        DBZ --> SINKS["3 sinks: DuckDB, local file, MinIO/S3"]
+        SINKS -->|"cdc/batch_load.py"| BATCH[("DuckDB, incremental")]
+        SINKS -->|"cdc/dbt/, via httpfs"| CDCDBT["marts + metrics"]
+        CDCDBT --> API["cdc/api/"] --> UI["cdc/frontend/"]
     end
 ```
 
-Two independent test arms sharing only the `generator/` entity/event logic:
-the benchmark asks whether an *agent* answers correctly and notices bad data;
-the CDC pipeline asks whether a *change-data-capture pipeline* propagates
-changes correctly and how much lag it introduces. Neither depends on the
-other's output — see `cdc/README.md` for that arm's own diagram and details.
+See `cdc/README.md` for the CDC arm's own, more detailed diagram and
+per-piece verification notes.
 
 ## Setup
 
@@ -41,6 +52,8 @@ export ANTHROPIC_API_KEY=...          # for --provider claude
 export KIMI_API_KEY=...               # for --provider kimi
 export KIMI_BASE_URL=https://api.kimi.com/coding   # Kimi's Anthropic-compatible endpoint
 ```
+
+---
 
 ## 1. Generate the database
 
@@ -128,9 +141,7 @@ uses `LEFT JOIN` (not `INNER JOIN`) to `orders`/`customers`/`products`, so an
 orphaned `product_id`/`customer_id` shows up as a NULL join rather than being
 silently dropped. The marts carry every injected issue through exactly as raw-table
 queries would — they're not a "cleaned" alternative, just a differently-shaped view
-of the same data (groundwork for a future dbt Semantic Layer / MetricFlow metrics
-layer, and eventually a second agent experiment arm querying marts instead of raw
-tables).
+of the same data.
 
 **Important**: DuckDB uses file-level locking. `dbt run` opens
 `data/business.duckdb` read-write, which conflicts with the agent's read-only
@@ -139,6 +150,8 @@ connection (or vice versa) if both try to access the file at the same time. Run
 active — and re-run it after `python -m generator.generate` if you want the marts
 schemas refreshed (materialized as views, so they'll reflect new data automatically,
 but a fresh DB file needs `dbt run` at least once to recreate the schemas in it).
+
+---
 
 ## 6. CDC pipeline (optional)
 
@@ -150,21 +163,37 @@ cd cdc && docker compose up -d
 .venv/bin/python -m cdc.verify                  # diff the sink against Postgres + report lag
 ```
 
-A second, independent test arm alongside the agent benchmark above — this one
-tests change-data-capture correctness and lag rather than agent behavior.
 `generator/eventlog.py` gives every row a lifecycle (inserts, corrections, late
-arrivals, duplicates, retractions) instead of a single final state, replays it
-into Postgres (`cdc/replay.py`), and Debezium/Kafka Connect streams the changes
-to three different sinks: a DuckDB materializer, a local JSONL file, and a
-MinIO/S3 bucket. On top of the MinIO bucket sit two more independent paths:
-`cdc/batch_load.py` (incremental Python loader) and `cdc/dbt/` (dbt-duckdb
-models reading the raw JSONL directly via `httpfs`, squashing it to current
-state and computing real metrics in SQL) — `cdc/api/` serves those metrics
-over HTTP, and `cdc/frontend/` is a small dashboard (plain HTML/JS, no
-build step) calling it. See `cdc/README.md` for the full pipeline, what
-each piece verifies, and known limitations. Fully independent of
-`data/business.duckdb` and the sections above — nothing here touches the
-agent or the benchmark.
+arrivals, duplicates, retractions) instead of a single final state, and
+`cdc/replay.py` applies that stream into Postgres, paced to real/scaled
+time so `created_at`/`updated_at` reflect genuine arrival and correction
+lag. Debezium/Kafka Connect streams the changes to three independent sinks
+— a DuckDB materializer, a local JSONL file, and a MinIO/S3 bucket — and
+two more independent paths sit on top of the bucket:
+
+- **`cdc/batch_load.py`** — an incremental Python loader, tracking exactly
+  which objects it's already processed (not a timestamp watermark, so it
+  stays correct under late-arriving data) and writing to its own DuckDB
+  file.
+- **`cdc/dbt/`** — dbt-duckdb models reading the raw JSONL directly via
+  `httpfs`, squashing the change-event log into current state and
+  computing real metrics (revenue by channel, customers by region,
+  inventory reorder status) in SQL, with no Python CDC-parsing code
+  involved.
+
+`cdc/api/` is a small FastAPI app serving those metrics over HTTP — it
+never touches Kafka/Postgres/MinIO itself, only the DuckDB file `dbt run`
+produces — including a `/meta` endpoint reporting when the marts were last
+refreshed and how far behind the underlying data is right now. `cdc/frontend/`
+is a small dashboard (plain HTML/JS, no build step) calling that API,
+mounted same-origin so no CORS setup is needed.
+
+See `cdc/README.md` for the full pipeline, what each piece verifies, and
+known limitations; `cdc/ARCHITECTURE_DECISIONS.md` for the reasoning
+behind the less-obvious choices. Fully independent of `data/business.duckdb`
+and the sections above — nothing here touches the agent or the benchmark.
+
+---
 
 ## Repo layout
 
@@ -175,16 +204,27 @@ agent/        the tool-use analytics agent (run_sql loop, Claude/Kimi providers)
 benchmark/    schema doc for the agent, questions.yaml, the run.py driver
 grader/       scoring logic + CLI
 dbt/          staging + marts modeling layer on top of data/business.duckdb
-cdc/          Postgres + Debezium/Kafka Connect CDC pipeline (replay, consumer,
-              verify, batch_load, and DuckDB/file/MinIO sinks);
-              cdc/dbt/ models the raw MinIO storage directly, cdc/api/ serves
-              those metrics over HTTP, cdc/frontend/ is the dashboard that
-              calls it -- see cdc/README.md
+cdc/          Postgres + Debezium/Kafka Connect CDC pipeline
+  replay.py, consumer.py, verify.py, batch_load.py, schema_map.py -- the
+    Python side: replay, streaming consumer, correctness/lag checks,
+    incremental batch loader, and the shared Debezium-envelope decode
+    logic all three loaders import
+  connect.Dockerfile, connectors/, docker-compose.yml -- Postgres,
+    Debezium/Kafka Connect, MinIO, and the sink connector configs
+  dbt/        models the raw MinIO storage directly via httpfs (a third,
+              independent path onto the same data) -- staging squash
+              models + marts/metrics; run.sh wraps `dbt run` to sidestep
+              a dbt-duckdb path-resolution footgun
+  api/        FastAPI app serving the marts over HTTP
+  frontend/   plain HTML/JS dashboard calling the API
+  README.md, ARCHITECTURE_DECISIONS.md, FILE_FORMATS.md -- pipeline docs,
+              decision records, and the JSONL-vs-Parquet writeup
 data/         generated DB + issue_log.json (gitignored, regenerate via generator.generate)
 ```
 
 See `CHANGELOG.md` for what's implemented as of each tagged release
-(`baseline-v1`, `cdc-v1`, ...) and what's new incrementally at each one.
+(`baseline-v1`, `cdc-v1`, `cdc-v2`, ...) and what's new incrementally at
+each one.
 
 ## Regenerating questions.yaml
 
