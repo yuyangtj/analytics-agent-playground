@@ -1,7 +1,9 @@
 [project]
 name = "analytics-agent-playground"
 version = "0.1.0"
-description = "Synthetic e-commerce business + benchmark for testing analytics agents' correctness and data-limitation awareness"
+description = "A synthetic e-commerce business used to test data platform components: an LLM analytics agent's correctness and data-limitation awareness, and a CDC pipeline's correctness and lag"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "duckdb>=1.0.0",

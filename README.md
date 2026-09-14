@@ -69,6 +69,26 @@ data-quality issues, and a benchmark measuring whether an analytics agent
 is missing, ambiguous, or unreliable rather than confidently answering
 anyway.
 
+**Sample result** (one committed run, `benchmark/results/20260822-161540.graded.json` —
+Kimi k3-256k, `reasoning_effort=low`, neutral system prompt, no hint to
+look for data problems):
+
+| Metric | Result |
+|---|---|
+| Correctness | 7/10 gradable questions (70%) |
+| Awareness recall | 3/15 issue-affected questions flagged (20%) |
+| False-positive rate | 0/5 clean questions wrongly flagged (0%) |
+
+The gap between those two numbers is the actual finding: this run got
+most *gradable* answers right, but caught the underlying data problem in
+only 1 of 5 cases where one existed — and never cried wolf on clean data.
+One run, one model, one configuration — not a claim about Kimi models in
+general, just what this specific run produced. Re-run and grade with
+`--provider claude|kimi --grade` (below) to add more data points; awareness
+recall specifically is a lower bound regardless of provider, since the
+grader only credits keyword-recognizable hedging (`grader/rubric.py`), not
+every way of correctly expressing uncertainty.
+
 ### 1. Generate the database
 
 ```bash
