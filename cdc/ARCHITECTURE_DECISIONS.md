@@ -474,3 +474,52 @@ all 8 Postgres tables, computed independently, exactly to the microsecond;
 (cross-checked against `stat`, accounting for the display timezone
 difference — UTC in the API response vs. local time from `stat`, same
 instant).
+
+---
+
+## ADR-11: `cdc/consumer.py`, `cdc/batch_load.py`, and `cdc/dbt/` are one deliberate ingestion-strategy comparison, not three unrelated components
+
+**Status**: Implemented (`cdc/compare_ingestion.py`, `cdc/INGESTION_STRATEGIES.md`).
+
+**Context**: these three pieces were each built for their own reason, at
+different points, and documented separately (ADR-1, ADR-5, ADR-7). They
+were never framed as answering one question together: streaming vs.
+micro-batch vs. pure batch, same underlying data, what actually differs?
+That framing turned out to be the more useful one — it's the actual
+question a data platform decision between these approaches comes down to.
+
+**Decision**: `cdc/compare_ingestion.py` reads whatever each of the three
+has already produced (each one's own lag-tracking table, or the API's
+`/meta` for the one that doesn't have a per-event lag concept at all) and
+prints one consolidated report, rather than reimplementing lag tracking a
+fourth time. `cdc/INGESTION_STRATEGIES.md` is the actual comparison —
+architecture table, a real measured run, and the tradeoffs that don't show
+up in the lag numbers (idle resource cost, what "lag" structurally means
+per strategy, late-arrival correctness, restart behavior).
+
+**A real methodology bug, hit and fixed while building this**: the first
+comparison run used a Postgres instance replayed into across multiple
+sessions hours apart. Kafka retained the old messages; the streaming
+consumer read from-beginning and mixed hours-old backlog with fresh data
+in one run, producing a p50 lag of *29 hours* — technically the output of
+correct code, but not a fair comparison of anything. Not obvious at a
+glance (a huge number doesn't announce itself as "contamination" rather
+than "the strategy is just slow"); caught by checking the actual data's
+timespan (`min`/`max(created_at)`) before trusting the numbers, then
+re-running the entire comparison from a single clean teardown and one
+contiguous replay session. Documented directly in
+`cdc/INGESTION_STRATEGIES.md` rather than quietly fixed and forgotten,
+since "don't compare lag across a stack with accumulated backlog" is a
+real, reusable lesson for using this comparison tool at all, not specific
+to this one run.
+
+**Verified live**: the clean re-run showed a sane, expected gradient
+(streaming p50 ~8s, micro-batch p50 ~54s — dominated by `s3-sink`'s own
+~60s flush interval, pure-batch lag ~72s), and — checked independently,
+not assumed — identical correctness across all three: `cdc/verify.py`
+against both DuckDB outputs showed exact row-count parity with Postgres
+on all 8 tables, and the dbt-sourced API's customer count matched Postgres
+exactly (283 in all four places). So the comparison is genuinely only
+about latency and operational shape, not a speed-vs-correctness tradeoff —
+worth stating plainly rather than assuming "faster must mean less
+correct" when the data doesn't show that here.

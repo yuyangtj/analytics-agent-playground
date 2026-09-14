@@ -460,6 +460,30 @@ again take its section's table down with it -- see `ARCHITECTURE_DECISIONS.md`
 ADR-9 for the full story. Still worth an eyeball pass in a real browser
 after any change here; this environment still can't visually confirm it.
 
+## Comparing ingestion strategies
+
+`cdc/consumer.py` (streaming), `cdc/batch_load.py` (micro-batch), and
+`cdc/dbt/` (pure batch) all exist independently, but they're also one
+deliberate comparison -- same underlying data, three different ways of
+getting it into a queryable form. `cdc/compare_ingestion.py` reads
+whatever each one has already produced and reports lag side by side (a
+real distribution for streaming/micro-batch, a single point-in-time
+freshness number for pure batch -- that difference is itself part of the
+comparison, not a gap in the tool):
+
+```bash
+.venv/bin/python -m cdc.compare_ingestion
+```
+
+See `INGESTION_STRATEGIES.md` for the architecture table, a real measured
+run, the tradeoffs that don't show up in the lag numbers (idle resource
+cost, late-arrival correctness, restart behavior), and a real methodology
+bug hit while building this (comparing lag across a stack with
+hours-old Kafka backlog gives you a 29-hour "lag" that has nothing to do
+with any of the three strategies -- caught by checking the data's actual
+timespan before trusting the numbers). ADR-11 in `ARCHITECTURE_DECISIONS.md`
+has the short version.
+
 ## Not done yet
 
 - **`s3-sink` now has an automated correctness check, transitively** --
