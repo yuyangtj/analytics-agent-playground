@@ -32,6 +32,7 @@ which minimizes (but doesn't eliminate) that window.
 
 import datetime as dt
 import os
+import pathlib
 from typing import Optional
 
 import duckdb
@@ -40,6 +41,7 @@ from fastapi.staticfiles import StaticFiles
 
 DB_PATH = os.environ.get("CDC_ANALYTICS_DB", os.path.join(os.path.dirname(__file__), "..", "dbt", "cdc_raw.duckdb"))
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+DBT_DIR = pathlib.Path(os.path.dirname(__file__)) / ".." / "dbt"
 
 app = FastAPI(
     title="CDC Analytics API",
@@ -206,6 +208,88 @@ def order_detail(order_id: int):
     if not rows:
         raise HTTPException(status_code=404, detail=f"No order {order_id}")
     return rows[0]
+
+
+def _metricflow_query(metrics: list[str], group_by: list[str], where: Optional[str]) -> dict:
+    """Builds a fresh MetricFlowEngine, runs one query, discards it.
+
+    Deliberately NOT a persistent/global engine, even though building one
+    costs ~0.9s (vs ~10-20ms per query on an already-built one) -- confirmed
+    live (see ARCHITECTURE_DECISIONS.md ADR-12) that a held engine keeps its
+    DuckDB connection open indefinitely, which then flat-out blocks (lock
+    conflict, not just staleness) any concurrent `./cdc/dbt/run.sh`. A
+    per-request engine mirrors `_query()`'s fresh-connection-per-request
+    philosophy (ADR-8) and keeps the same short, self-closing window open
+    against cdc_raw.duckdb.
+
+    CLIConfiguration resolves its DuckDB file path relative to the process
+    CWD, not the project-dir argument (the same footgun cdc/dbt/run.sh
+    exists to work around for the dbt CLI) -- so this chdir's into cdc/dbt/
+    for the duration of the call and restores CWD in a `finally`, rather
+    than relying on the API process happening to be launched from there.
+
+    Also explicitly tears down the dbt-duckdb adapter's connection before
+    returning -- confirmed live that skipping this breaks every *other*
+    endpoint too, for the rest of the process's life: `adapter.connections
+    .cleanup_all()` alone isn't enough, because `DuckDBConnectionManager
+    ._ENV` (the object actually holding the raw duckdb connection) is a
+    *class* attribute, shared by every adapter instance in the process --
+    closing this request's Connection wrapper doesn't clear it. The
+    surviving `_ENV` then makes every later plain `_query()` read-only
+    `duckdb.connect()` fail with "Can't open a connection to same database
+    file with a different configuration than existing connections", even
+    though nothing here holds a live Python reference to that engine or
+    its connection anymore. `close_all_connections()` is the classmethod
+    that actually clears `_ENV`.
+    """
+    from dbt_metricflow.cli.cli_configuration import CLIConfiguration
+    from metricflow.engine.metricflow_engine import MetricFlowQueryRequest
+
+    if not DBT_DIR.exists():
+        raise HTTPException(status_code=503, detail=f"{DBT_DIR} doesn't exist.")
+
+    original_cwd = os.getcwd()
+    os.chdir(DBT_DIR)
+    cfg = None
+    try:
+        cfg = CLIConfiguration()
+        cfg.setup(dbt_profiles_path=pathlib.Path("."), dbt_project_path=pathlib.Path("."), configure_file_logging=False)
+        req = MetricFlowQueryRequest.create(
+            metric_names=metrics,
+            group_by_names=group_by,
+            where_constraints=[where] if where else None,
+        )
+        result = cfg.mf.query(req)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if cfg is not None:
+            connections = cfg.dbt_artifacts.adapter.connections
+            connections.cleanup_all()
+            type(connections).close_all_connections()
+        os.chdir(original_cwd)
+
+    df = result.result_df
+    return {"columns": list(df.column_names), "rows": [list(row) for row in df.rows]}
+
+
+@app.get("/semantic/query")
+def semantic_query(
+    metrics: str = Query(..., description="Comma-separated metric names, e.g. total_revenue,order_count"),
+    group_by: str = Query("", description="Comma-separated dimension names, e.g. order_id__channel"),
+    where: Optional[str] = Query(None, description="MetricFlow where-clause filter, e.g. \"{{ Dimension('order_id__channel') }} = 'web'\""),
+):
+    """Same underlying marts as /metrics/*, but served through the dbt
+    Semantic Layer (MetricFlow) instead of hand-written SQL -- see
+    cdc/SEMANTIC_LAYER.md for why both exist side by side. Metric and
+    dimension names come from cdc/dbt/models/marts/_semantic.yml; the
+    dimension naming convention (`order_id__channel`, not just `channel`)
+    is MetricFlow's, not this API's."""
+    metric_names = [m.strip() for m in metrics.split(",") if m.strip()]
+    group_by_names = [g.strip() for g in group_by.split(",") if g.strip()]
+    if not metric_names:
+        raise HTTPException(status_code=400, detail="`metrics` must name at least one metric.")
+    return _metricflow_query(metric_names, group_by_names, where)
 
 
 # Mounted last, deliberately -- after every API route above, so /app never
