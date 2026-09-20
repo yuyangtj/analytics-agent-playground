@@ -1,4 +1,7 @@
-"""Generation of base entities: customers, products, marketing_spend."""
+"""Generation of base entities: customers, products, marketing_spend.
+
+Internal to generator/ -- used by generate.py, not part of the package's
+public API (see generator/__init__.py)."""
 
 import random
 from datetime import timedelta

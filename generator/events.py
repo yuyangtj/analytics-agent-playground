@@ -1,4 +1,7 @@
-"""Generation of event-level tables: sessions, orders, order_items, returns, inventory."""
+"""Generation of event-level tables: sessions, orders, order_items, returns, inventory.
+
+Internal to generator/ -- used by generate.py, not part of the package's
+public API (see generator/__init__.py)."""
 
 import random
 from datetime import timedelta
