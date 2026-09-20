@@ -8,6 +8,39 @@ Tag prefix tracks which component (see the top-level `README.md`) a
 release belongs to: `baseline-v*` is Component 1 (analytics agent),
 `cdc-v*` is Component 2 (CDC pipeline).
 
+## `cdc-v6` — 2026-09-20
+
+**Incremental since `cdc-v5`:**
+
+- **Ingestion-strategy comparison** (`cdc/compare_ingestion.py`,
+  `cdc/INGESTION_STRATEGIES.md`) — reframes `cdc/consumer.py` (streaming),
+  `cdc/batch_load.py` (micro-batch), and `cdc/dbt/` (pure batch) as one
+  deliberate comparison against the same underlying data, rather than
+  three unrelated components. A real measured clean run: streaming p50
+  ~8s, micro-batch p50 ~54s (dominated by `s3-sink`'s flush interval),
+  pure-batch lag ~72s — all three independently verified correct against
+  Postgres. Also documents a real methodology bug hit while building it:
+  comparing lag across a stack with hours-old Kafka backlog produced a
+  29-hour "lag" that had nothing to do with any of the three strategies.
+  ADR-11.
+
+- **Semantic layer** (`cdc/api/main.py`'s `/semantic/query`,
+  `cdc/dbt/models/marts/_semantic.yml`, `cdc/SEMANTIC_LAYER.md`) — serves
+  the same marts through the dbt Semantic Layer (MetricFlow) alongside the
+  existing hand-written SQL endpoints, as a deliberate comparison of two
+  serving-layer designs rather than a replacement. Builds and discards a
+  `MetricFlowEngine` per request rather than holding one across requests:
+  verified live that a held engine's DuckDB connection blocks a concurrent
+  `dbt run` outright (a lock conflict, not just staleness), so the design
+  mirrors the REST API's per-request-connection philosophy (ADR-8) despite
+  the ~0.9s per-request engine-build cost. ADR-12.
+
+- **README and repo-framing pass** — top-level `README.md` rewritten
+  against actual repo contents (a results table, an "Adding a new
+  component" section, an updated architecture diagram), the repo reframed
+  as one project testing multiple data platform components rather than two
+  independent arms, and an MIT `LICENSE` added.
+
 ## `cdc-v5` — 2026-09-13
 
 **Incremental since `cdc-v4`:**
