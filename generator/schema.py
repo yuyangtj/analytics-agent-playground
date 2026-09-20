@@ -1,4 +1,7 @@
-"""DuckDB table DDL for the synthetic business."""
+"""DuckDB table DDL for the synthetic business.
+
+Internal to generator/ -- used by generate.py, not part of the package's
+public API (see generator/__init__.py)."""
 
 DDL_STATEMENTS = [
     """
